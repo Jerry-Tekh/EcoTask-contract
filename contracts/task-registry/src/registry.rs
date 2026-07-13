@@ -211,6 +211,18 @@ impl RegistryContract {
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
         storage::read_creator_tasks(&e, &creator)
     }
+
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        let stored_admin = storage::read_admin(&e);
+        if current_admin != stored_admin {
+            panic!("registry: unauthorized");
+        }
+        if new_admin == current_admin {
+            panic!("registry: new admin must be different");
+        }
+        storage::write_admin(&e, &new_admin);
+    }
 }
 
 #[cfg(test)]
@@ -637,5 +649,47 @@ mod test {
         let ids = client.get_tasks_by_creator(&admin);
         assert_eq!(ids.len(), 1);
         assert_eq!(ids.get(0).unwrap(), task_id);
+    }
+
+    #[test]
+    fn test_transfer_admin() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let new_admin = Address::generate(&e);
+        client.transfer_admin(&admin, &new_admin);
+
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        let task_id = client.create_task(
+            &new_admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.creator, new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: unauthorized")]
+    fn test_transfer_admin_unauthorized() {
+        let (e, _admin, client) = setup();
+        e.mock_all_auths();
+
+        let attacker = Address::generate(&e);
+        let new_admin = Address::generate(&e);
+        client.transfer_admin(&attacker, &new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: new admin must be different")]
+    fn test_transfer_admin_same_address() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        client.transfer_admin(&admin, &admin);
     }
 }

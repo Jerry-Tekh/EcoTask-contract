@@ -347,6 +347,18 @@ impl RewardEngine {
         }
         pending
     }
+
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        let stored_admin = storage::read_admin(&e);
+        if current_admin != stored_admin {
+            panic!("engine: unauthorized");
+        }
+        if new_admin == current_admin {
+            panic!("engine: new admin must be different");
+        }
+        storage::write_admin(&e, &new_admin);
+    }
 }
 
 #[cfg(test)]
@@ -735,5 +747,37 @@ mod test {
 
         client.dispute_proof(&admin, &user3, &task_id);
         assert_eq!(client.get_pending_verifications().len(), 0);
+    }
+
+    #[test]
+    fn test_transfer_admin() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_admin = Address::generate(&e);
+        client.transfer_admin(&admin, &new_admin);
+
+        let new_oracle = Address::generate(&e);
+        client.set_oracle(&new_admin, &new_oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_transfer_admin_unauthorized() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let new_admin = Address::generate(&e);
+        client.transfer_admin(&attacker, &new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: new admin must be different")]
+    fn test_transfer_admin_same_address() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.transfer_admin(&admin, &admin);
     }
 }
