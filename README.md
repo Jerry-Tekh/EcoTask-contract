@@ -37,7 +37,9 @@ Every reward payout is **transparent, auditable, and trustless** — no middlema
 The EcoTask native token contract.
 
 - Issues ECO tokens tied to verified environmental impact
-- Controls minting — only the reward engine can mint new tokens
+- Minting is gated by a **minter role** — only the reward engine can mint new tokens (set via `set_minter`)
+- Admin controls minter assignment; default minter is the deployer
+- Validates `approve` inputs: non-negative amounts, future expiration
 - Implements the Stellar token interface (SEP-0041 compatible)
 - Supports token metadata: name, symbol, decimals
 
@@ -48,14 +50,20 @@ The on-chain task database.
 - Controls who can create tasks (admins, verified NGOs, sponsors)
 - Emits events when tasks are created, completed, or expired
 - Prevents double-claiming — tracks which wallets completed which tasks
+- Admin can cancel any active task via `admin_cancel_task` for governance
+- Rejects empty task types to ensure data quality
 
 ### 3. `reward-engine`
 The verification and payout engine.
 
 - Receives verification results from the off-chain oracle
 - Validates proof hashes against IPFS CIDs stored at submission
+- Cross-contract validates task is **active and not expired** before payout
+- Enforces reward cap: payout cannot exceed the task's declared reward amount
 - Mints ECO tokens or transfers USDC to the user's wallet on success
 - Handles disputes and partial rewards for incomplete tasks
+- Tracks cumulative `total_paid` for on-chain transparency and auditing
+- Admin can reconfigure token, registry, and oracle addresses post-deployment
 
 ---
 
@@ -244,9 +252,12 @@ soroban contract invoke \
 ## 🔒 Security
 
 - All contracts are designed for formal audit before mainnet deployment
-- Minting is restricted to the reward engine contract only
+- Minting is restricted to a designated **minter address** (the reward engine) via `set_minter`
+- Reward engine validates task status and reward cap before every payout
 - Task creation requires an admin or verified sponsor signature
+- Admin governance can cancel any active task via `admin_cancel_task`
 - Proof hashes are stored at submission time to prevent retroactive fraud
+- Approve validates non-negative amounts and future expirations
 - See [SECURITY.md](./SECURITY.md) to report vulnerabilities
 
 ---
