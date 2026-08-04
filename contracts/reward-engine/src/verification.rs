@@ -220,6 +220,8 @@ impl RewardEngine {
             amount: reward_amount,
         }
         .publish(&e);
+
+        storage::add_total_paid(&e, reward_amount);
     }
 
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
@@ -342,6 +344,8 @@ impl RewardEngine {
                 &Symbol::new(&e, "mint"),
                 vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
             );
+
+            storage::add_total_paid(&e, reward_amount);
         } else {
             verification.status = VerificationStatus::Rejected;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -375,6 +379,10 @@ impl RewardEngine {
             }
         }
         pending
+    }
+
+    pub fn total_paid(e: Env) -> i128 {
+        storage::read_total_paid(&e)
     }
 
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
@@ -908,5 +916,46 @@ mod test {
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
         client.dispute_proof(&admin, &user, &task_id);
         client.resolve_dispute(&admin, &user, &task_id, &true, &9999);
+    }
+
+    #[test]
+    fn test_total_paid_after_approve() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        assert_eq!(client.total_paid(), 0);
+
+        let proof_cid = String::from_str(&e, "QmTotal1");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        assert_eq!(client.total_paid(), 1000);
+    }
+
+    #[test]
+    fn test_total_paid_after_dispute_resolve() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        assert_eq!(client.total_paid(), 0);
+
+        let proof_cid = String::from_str(&e, "QmTotalDispute");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+        client.resolve_dispute(&admin, &user, &task_id, &true, &1000);
+
+        assert_eq!(client.total_paid(), 1000);
+    }
+
+    #[test]
+    fn test_total_paid_unaffected_by_rejection() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmTotalRej");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.reject_proof(&oracle, &user, &task_id);
+
+        assert_eq!(client.total_paid(), 0);
     }
 }

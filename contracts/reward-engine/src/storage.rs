@@ -33,6 +33,7 @@ pub enum DataKey {
     MinReward,
     MaxReward,
     VerificationList,
+    TotalPaid,
 }
 
 #[derive(Clone, Debug)]
@@ -135,4 +136,17 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
 pub fn read_verification_keys(e: &Env) -> Vec<VerificationKey> {
     let key = DataKey::VerificationList;
     e.storage().instance().get(&key).unwrap_or(Vec::new(e))
+}
+
+pub fn add_total_paid(e: &Env, amount: i128) {
+    let key = DataKey::TotalPaid;
+    let current: i128 = e.storage().instance().get(&key).unwrap_or(0);
+    e.storage()
+        .instance()
+        .set(&key, &(current.checked_add(amount).expect("total_paid overflow")));
+}
+
+pub fn read_total_paid(e: &Env) -> i128 {
+    let key = DataKey::TotalPaid;
+    e.storage().instance().get(&key).unwrap_or(0)
 }
