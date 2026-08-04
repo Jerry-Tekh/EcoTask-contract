@@ -200,6 +200,29 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    pub fn admin_cancel_task(e: Env, caller: Address, task_id: u64) {
+        caller.require_auth();
+        access::require_admin(&e, &caller);
+
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status != TaskStatus::Active {
+            panic!("registry: task is not active");
+        }
+
+        task.status = TaskStatus::Cancelled;
+        storage::write_task(&e, &task);
+
+        TaskCancelledEvent {
+            creator: task.creator,
+            task_id,
+        }
+        .publish(&e);
+    }
+
     pub fn task_count(e: Env) -> u64 {
         storage::next_task_id(&e)
     }
@@ -691,5 +714,61 @@ mod test {
         e.mock_all_auths();
 
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    fn test_admin_cancel_task() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.admin_cancel_task(&admin, &task_id);
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: unauthorized")]
+    fn test_non_admin_cannot_admin_cancel() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        let other = Address::generate(&e);
+        client.admin_cancel_task(&other, &task_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task is not active")]
+    fn test_admin_cancel_completed_task() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let user = Address::generate(&e);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.complete_task(&admin, &task_id, &user);
+        client.admin_cancel_task(&admin, &task_id);
     }
 }

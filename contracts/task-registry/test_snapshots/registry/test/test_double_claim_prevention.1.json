@@ -23,7 +23,7 @@
                   "string": "ocean-cleanup"
                 },
                 {
-                  "bytes": "c1f90e384c81e24b7dc6e8504cdbf182b5d4e506e40050070529d7e2e7950d55"
+                  "bytes": "374f294ec4c730baaddcf9748d4ac9ac4cc0bda67a8b57ec636d83964b58bc30"
                 },
                 {
                   "i128": "1000"
@@ -244,7 +244,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "c1f90e384c81e24b7dc6e8504cdbf182b5d4e506e40050070529d7e2e7950d55"
+                      "bytes": "374f294ec4c730baaddcf9748d4ac9ac4cc0bda67a8b57ec636d83964b58bc30"
                     }
                   },
                   {
