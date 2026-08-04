@@ -2,7 +2,26 @@ use crate::storage;
 use soroban_sdk::{
     contract, contractevent, contractimpl, vec, Address, Env, IntoVal, String, Symbol, Val,
 };
+use task_registry::{Task, TaskStatus};
 pub use storage::{Verification, VerificationStatus};
+
+/// Fetches the task from the registry and enforces that it is active and not
+/// expired. Returns the task so the caller can inspect `reward_amount`.
+fn require_active_task(e: &Env, task_id: u64) -> Task {
+    let registry_id = storage::read_registry(e);
+    let task: Task = e.invoke_contract(
+        &registry_id,
+        &Symbol::new(e, "get_task"),
+        vec![e, task_id.into_val(e)],
+    );
+    if task.status != TaskStatus::Active {
+        panic!("engine: task is not active");
+    }
+    if task.expires_at < e.ledger().timestamp() {
+        panic!("engine: task has expired");
+    }
+    task
+}
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +183,11 @@ impl RewardEngine {
             }
         }
 
+        let task = require_active_task(&e, task_id);
+        if reward_amount > task.reward_amount {
+            panic!("engine: reward exceeds task budget");
+        }
+
         verification.status = VerificationStatus::Approved;
         verification.reward_amount = reward_amount;
         verification.resolved_at = Some(e.ledger().timestamp());
@@ -288,6 +312,11 @@ impl RewardEngine {
                 if reward_amount > max {
                     panic!("engine: reward exceeds maximum");
                 }
+            }
+
+            let task = require_active_task(&e, task_id);
+            if reward_amount > task.reward_amount {
+                panic!("engine: reward exceeds task budget");
             }
 
             verification.status = VerificationStatus::Approved;

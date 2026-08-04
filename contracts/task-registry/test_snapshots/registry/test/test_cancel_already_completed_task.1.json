@@ -23,7 +23,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "9b7da600fbc99528633294bdc270ee2a16d910c008ae141b741e76047ef72e79"
+                  "bytes": "a7f99faf19d56cb1435a0d34d60fc563911d5f35f9f82fcec30e3b73377fcebd"
                 },
                 {
                   "i128": "1000"
@@ -244,7 +244,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "9b7da600fbc99528633294bdc270ee2a16d910c008ae141b741e76047ef72e79"
+                      "bytes": "a7f99faf19d56cb1435a0d34d60fc563911d5f35f9f82fcec30e3b73377fcebd"
                     }
                   },
                   {
