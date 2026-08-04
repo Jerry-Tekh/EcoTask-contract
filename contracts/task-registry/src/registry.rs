@@ -84,6 +84,9 @@ impl RegistryContract {
         creator.require_auth();
         access::require_sponsor(&e, &creator);
 
+        if task_type.is_empty() {
+            panic!("registry: task type must not be empty");
+        }
         if reward_amount <= 0 {
             panic!("registry: reward must be positive");
         }
@@ -622,6 +625,23 @@ mod test {
 
         client.cancel_task(&admin, &task_id);
         client.expire_task(&admin, &task_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task type must not be empty")]
+    fn test_create_task_empty_type() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        client.create_task(
+            &admin,
+            &String::from_str(&e, ""),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
     }
 
     #[test]
