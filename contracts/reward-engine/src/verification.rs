@@ -99,6 +99,24 @@ impl RewardEngine {
         storage::write_oracle(&e, &new_oracle);
     }
 
+    pub fn set_token(e: Env, caller: Address, new_token: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::write_token(&e, &new_token);
+    }
+
+    pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::write_registry(&e, &new_registry);
+    }
+
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -817,6 +835,46 @@ mod test {
         e.mock_all_auths_allowing_non_root_auth();
 
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    fn test_set_token() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_token = Address::generate(&e);
+        client.set_token(&admin, &new_token);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_set_token_unauthorized() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let new_token = Address::generate(&e);
+        client.set_token(&attacker, &new_token);
+    }
+
+    #[test]
+    fn test_set_registry() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_registry = Address::generate(&e);
+        client.set_registry(&admin, &new_registry);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_set_registry_unauthorized() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let new_registry = Address::generate(&e);
+        client.set_registry(&attacker, &new_registry);
     }
 
     #[test]
