@@ -29,6 +29,17 @@ pub fn has_admin(e: &Env) -> bool {
     e.storage().instance().has(&symbol_short!("admin"))
 }
 
+pub fn write_minter(e: &Env, minter: &Address) {
+    e.storage().instance().set(&symbol_short!("minter"), minter);
+}
+
+pub fn read_minter(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&symbol_short!("minter"))
+        .unwrap()
+}
+
 pub fn write_metadata(e: &Env, name: &String, symbol: &String, decimal: &u32) {
     e.storage().instance().set(&symbol_short!("name"), name);
     e.storage().instance().set(&symbol_short!("symbol"), symbol);

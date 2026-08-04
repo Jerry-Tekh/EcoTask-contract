@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "7113737c80c35e5b809d8b988d90cdea5825730f3240f3412334b0531c876eab"
+                  "bytes": "aa36dad3a6082c5fa41a22dc17b79e80f2357f8cf94307f5b59381b8d9fc1cc6"
                 },
                 {
                   "i128": "1000"
@@ -245,6 +245,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "minter"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "name"
                       },
                       "val": {
@@ -399,7 +407,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "7113737c80c35e5b809d8b988d90cdea5825730f3240f3412334b0531c876eab"
+                      "bytes": "aa36dad3a6082c5fa41a22dc17b79e80f2357f8cf94307f5b59381b8d9fc1cc6"
                     }
                   },
                   {
