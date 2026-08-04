@@ -75,6 +75,13 @@ pub struct DisputeResolvedEvent {
 #[contract]
 pub struct RewardEngine;
 
+/// Panics if the engine is paused.
+fn require_not_paused(e: &Env) {
+    if storage::is_paused(e) {
+        panic!("engine: contract is paused");
+    }
+}
+
 #[contractimpl]
 impl RewardEngine {
     pub fn initialize(e: Env, admin: Address, token: Address, registry: Address, oracle: Address) {
@@ -132,7 +139,30 @@ impl RewardEngine {
         storage::write_reward_range(&e, min_reward, max_reward);
     }
 
+    pub fn pause(e: Env, caller: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::set_paused(&e, true);
+    }
+
+    pub fn unpause(e: Env, caller: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::set_paused(&e, false);
+    }
+
+    pub fn is_paused(e: Env) -> bool {
+        storage::is_paused(&e)
+    }
+
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -172,6 +202,7 @@ impl RewardEngine {
         task_id: u64,
         reward_amount: i128,
     ) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -243,6 +274,7 @@ impl RewardEngine {
     }
 
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -272,6 +304,7 @@ impl RewardEngine {
     }
 
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
+        require_not_paused(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -304,6 +337,7 @@ impl RewardEngine {
         approve: bool,
         reward_amount: i128,
     ) {
+        require_not_paused(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -1015,5 +1049,88 @@ mod test {
         client.reject_proof(&oracle, &user, &task_id);
 
         assert_eq!(client.total_paid(), 0);
+    }
+
+    #[test]
+    fn test_pause_blocks_submit_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        let proof_cid = String::from_str(&e, "QmPauseSubmit");
+        let result = client.try_submit_proof(&oracle, &user, &task_id, &proof_cid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_approve_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseApprove");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        client.pause(&admin);
+        let result = client.try_approve_proof(&oracle, &user, &task_id, &50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_dispute_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseDispute");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        client.pause(&admin);
+        let result = client.try_dispute_proof(&admin, &user, &task_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_resolve_dispute() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseResolve");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+
+        client.pause(&admin);
+        let result = client.try_resolve_dispute(&admin, &user, &task_id, &true, &50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unpause_allows_operations() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        let proof_cid = String::from_str(&e, "QmUnpause");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        let verification = client.get_verification(&task_id, &user);
+        assert_eq!(verification.status, VerificationStatus::Pending);
+    }
+
+    #[test]
+    fn test_pause_unpause_only_admin() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let someone = Address::generate(&e);
+        let result = client.try_pause(&someone);
+        assert!(result.is_err());
+
+        let result = client.try_unpause(&someone);
+        assert!(result.is_err());
     }
 }

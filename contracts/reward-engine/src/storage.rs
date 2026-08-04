@@ -34,6 +34,7 @@ pub enum DataKey {
     MaxReward,
     VerificationList,
     TotalPaid,
+    Paused,
 }
 
 #[derive(Clone, Debug)]
@@ -149,4 +150,12 @@ pub fn add_total_paid(e: &Env, amount: i128) {
 pub fn read_total_paid(e: &Env) -> i128 {
     let key = DataKey::TotalPaid;
     e.storage().instance().get(&key).unwrap_or(0)
+}
+
+pub fn set_paused(e: &Env, paused: bool) {
+    e.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+pub fn is_paused(e: &Env) -> bool {
+    e.storage().instance().get(&DataKey::Paused).unwrap_or(false)
 }

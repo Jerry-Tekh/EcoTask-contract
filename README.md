@@ -64,6 +64,7 @@ The verification and payout engine.
 - Handles disputes and partial rewards for incomplete tasks
 - Tracks cumulative `total_paid` for on-chain transparency and auditing
 - Admin can reconfigure token, registry, and oracle addresses post-deployment
+- **Emergency pause**: admin can pause all operations instantly; unpause to resume
 
 ---
 

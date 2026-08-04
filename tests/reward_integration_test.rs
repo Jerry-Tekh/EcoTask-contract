@@ -271,3 +271,49 @@ fn test_admin_cancel_and_payout_rejection() {
     let result = engine_client.try_approve_proof(&oracle, &user, &task_id, &400);
     assert!(result.is_err());
 }
+
+#[test]
+fn test_emergency_pause_blocks_rewards() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "reforestation"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmPause");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+
+    engine_client.pause(&admin);
+    assert!(engine_client.is_paused());
+
+    let result = engine_client.try_approve_proof(&oracle, &user, &task_id, &500);
+    assert!(result.is_err());
+
+    let result = engine_client.try_dispute_proof(&admin, &user, &task_id);
+    assert!(result.is_err());
+
+    engine_client.unpause(&admin);
+    assert!(!engine_client.is_paused());
+
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+    assert_eq!(token_client.balance(&user), 500);
+}
