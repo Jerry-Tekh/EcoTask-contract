@@ -547,6 +547,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ecotask-contracts"
+version = "0.1.0"
+dependencies = [
+ "eco-token",
+ "reward-engine",
+ "soroban-sdk",
+ "task-registry",
+]
+
+[[package]]
 name = "ed25519"
 version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
