@@ -62,13 +62,14 @@ impl TokenContract {
             panic!("token: already initialized");
         }
         storage::write_admin(&e, &admin);
+        storage::write_minter(&e, &admin);
         storage::write_metadata(&e, &name, &symbol, &decimal);
         storage::write_supply(&e, 0);
     }
 
     pub fn mint(e: Env, to: Address, amount: i128) {
-        let admin = storage::read_admin(&e);
-        admin.require_auth();
+        let minter = storage::read_minter(&e);
+        minter.require_auth();
 
         if amount <= 0 {
             panic!("token: amount must be positive");
@@ -85,7 +86,7 @@ impl TokenContract {
         storage::write_supply(&e, supply.checked_add(amount).expect("supply overflow"));
 
         MintEvent {
-            admin,
+            admin: minter,
             to: to.clone(),
             amount,
         }
@@ -161,6 +162,19 @@ impl TokenContract {
         storage::write_admin(&e, &new_admin);
     }
 
+    pub fn minter(e: Env) -> Address {
+        storage::read_minter(&e)
+    }
+
+    pub fn set_minter(e: Env, caller: Address, new_minter: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("token: unauthorized");
+        }
+        storage::write_minter(&e, &new_minter);
+    }
+
     pub fn burn(e: Env, from: Address, amount: i128) {
         from.require_auth();
 
@@ -191,6 +205,13 @@ impl TokenContract {
 
     pub fn approve(e: Env, owner: Address, spender: Address, amount: i128, expiration_ledger: u32) {
         owner.require_auth();
+
+        if amount < 0 {
+            panic!("token: amount must be non-negative");
+        }
+        if expiration_ledger <= e.ledger().sequence() {
+            panic!("token: expiration must be in the future");
+        }
 
         let allowance = storage::Allowance {
             amount,
@@ -275,6 +296,7 @@ impl TokenContract {
 mod test {
     use crate::{TokenContract, TokenContractClient};
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{Address, Env, String};
 
     #[test]
@@ -386,7 +408,7 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn test_mint_only_admin() {
+    fn test_mint_requires_minter_auth() {
         let e = Env::default();
         let admin = Address::generate(&e);
         let user = Address::generate(&e);
@@ -401,6 +423,69 @@ mod test {
         );
 
         client.mint(&user, &1000);
+    }
+
+    #[test]
+    fn test_initial_minter_is_admin() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        assert_eq!(client.minter(), admin);
+    }
+
+    #[test]
+    fn test_set_minter_transfers_minting_rights() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let minter = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_minter(&admin, &minter);
+        assert_eq!(client.minter(), minter);
+
+        client.mint(&user, &1000);
+        assert_eq!(client.balance(&user), 1000);
+        assert_eq!(client.total_supply(), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: unauthorized")]
+    fn test_set_minter_unauthorized() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let attacker = Address::generate(&e);
+        let minter = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_minter(&attacker, &minter);
     }
 
     #[test]
@@ -823,5 +908,72 @@ mod test {
 
         assert_eq!(client.balance(&user), 0);
         assert_eq!(client.total_supply(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: amount must be non-negative")]
+    fn test_approve_negative_amount() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.approve(&owner, &spender, &-100, &(e.ledger().sequence() + 100));
+    }
+
+    #[test]
+    #[should_panic(expected = "token: expiration must be in the future")]
+    fn test_approve_past_expiration() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.ledger().set_sequence_number(100);
+        e.mock_all_auths();
+        client.approve(&owner, &spender, &500, &50);
+    }
+
+    #[test]
+    fn test_approve_zero_revokes_allowance() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.approve(&owner, &spender, &500, &(e.ledger().sequence() + 100));
+        assert_eq!(client.allowance(&owner, &spender), 500);
+
+        client.approve(&owner, &spender, &0, &(e.ledger().sequence() + 100));
+        assert_eq!(client.allowance(&owner, &spender), 0);
     }
 }

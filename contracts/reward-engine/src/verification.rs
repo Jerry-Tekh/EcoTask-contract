@@ -2,7 +2,26 @@ use crate::storage;
 use soroban_sdk::{
     contract, contractevent, contractimpl, vec, Address, Env, IntoVal, String, Symbol, Val,
 };
+use task_registry::{Task, TaskStatus};
 pub use storage::{Verification, VerificationStatus};
+
+/// Fetches the task from the registry and enforces that it is active and not
+/// expired. Returns the task so the caller can inspect `reward_amount`.
+fn require_active_task(e: &Env, task_id: u64) -> Task {
+    let registry_id = storage::read_registry(e);
+    let task: Task = e.invoke_contract(
+        &registry_id,
+        &Symbol::new(e, "get_task"),
+        vec![e, task_id.into_val(e)],
+    );
+    if task.status != TaskStatus::Active {
+        panic!("engine: task is not active");
+    }
+    if task.expires_at < e.ledger().timestamp() {
+        panic!("engine: task has expired");
+    }
+    task
+}
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,6 +75,13 @@ pub struct DisputeResolvedEvent {
 #[contract]
 pub struct RewardEngine;
 
+/// Panics if the engine is paused.
+fn require_not_paused(e: &Env) {
+    if storage::is_paused(e) {
+        panic!("engine: contract is paused");
+    }
+}
+
 #[contractimpl]
 impl RewardEngine {
     pub fn initialize(e: Env, admin: Address, token: Address, registry: Address, oracle: Address) {
@@ -80,6 +106,24 @@ impl RewardEngine {
         storage::write_oracle(&e, &new_oracle);
     }
 
+    pub fn set_token(e: Env, caller: Address, new_token: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::write_token(&e, &new_token);
+    }
+
+    pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::write_registry(&e, &new_registry);
+    }
+
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -95,7 +139,30 @@ impl RewardEngine {
         storage::write_reward_range(&e, min_reward, max_reward);
     }
 
+    pub fn pause(e: Env, caller: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::set_paused(&e, true);
+    }
+
+    pub fn unpause(e: Env, caller: Address) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("engine: unauthorized");
+        }
+        storage::set_paused(&e, false);
+    }
+
+    pub fn is_paused(e: Env) -> bool {
+        storage::is_paused(&e)
+    }
+
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -135,6 +202,7 @@ impl RewardEngine {
         task_id: u64,
         reward_amount: i128,
     ) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -162,6 +230,11 @@ impl RewardEngine {
             if reward_amount > max {
                 panic!("engine: reward exceeds maximum");
             }
+        }
+
+        let task = require_active_task(&e, task_id);
+        if reward_amount > task.reward_amount {
+            panic!("engine: reward exceeds task budget");
         }
 
         verification.status = VerificationStatus::Approved;
@@ -196,9 +269,12 @@ impl RewardEngine {
             amount: reward_amount,
         }
         .publish(&e);
+
+        storage::add_total_paid(&e, reward_amount);
     }
 
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
+        require_not_paused(&e);
         oracle.require_auth();
         let stored_oracle = storage::read_oracle(&e);
         if oracle != stored_oracle {
@@ -228,6 +304,7 @@ impl RewardEngine {
     }
 
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
+        require_not_paused(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -260,6 +337,7 @@ impl RewardEngine {
         approve: bool,
         reward_amount: i128,
     ) {
+        require_not_paused(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -290,6 +368,11 @@ impl RewardEngine {
                 }
             }
 
+            let task = require_active_task(&e, task_id);
+            if reward_amount > task.reward_amount {
+                panic!("engine: reward exceeds task budget");
+            }
+
             verification.status = VerificationStatus::Approved;
             verification.reward_amount = reward_amount;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -313,6 +396,8 @@ impl RewardEngine {
                 &Symbol::new(&e, "mint"),
                 vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
             );
+
+            storage::add_total_paid(&e, reward_amount);
         } else {
             verification.status = VerificationStatus::Rejected;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -323,7 +408,7 @@ impl RewardEngine {
             user,
             task_id,
             approved: approve,
-            reward_amount,
+            reward_amount: if approve { reward_amount } else { 0 },
         }
         .publish(&e);
     }
@@ -348,6 +433,10 @@ impl RewardEngine {
         pending
     }
 
+    pub fn total_paid(e: Env) -> i128 {
+        storage::read_total_paid(&e)
+    }
+
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
@@ -366,6 +455,7 @@ mod test {
     use crate::{RewardEngine, RewardEngineClient, VerificationStatus};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::BytesN;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{Address, Env, String};
 
     fn deploy_token(e: &Env, admin: &Address) -> Address {
@@ -779,5 +869,268 @@ mod test {
         e.mock_all_auths_allowing_non_root_auth();
 
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    fn test_set_token() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_token = Address::generate(&e);
+        client.set_token(&admin, &new_token);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_set_token_unauthorized() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let new_token = Address::generate(&e);
+        client.set_token(&attacker, &new_token);
+    }
+
+    #[test]
+    fn test_set_registry() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_registry = Address::generate(&e);
+        client.set_registry(&admin, &new_registry);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_set_registry_unauthorized() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let new_registry = Address::generate(&e);
+        client.set_registry(&attacker, &new_registry);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: reward exceeds task budget")]
+    fn test_approve_exceeds_task_budget() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmBudget");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.approve_proof(&oracle, &user, &task_id, &5000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: task has expired")]
+    fn test_approve_expired_task_fails() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 100),
+        );
+
+        e.ledger().set_timestamp(e.ledger().timestamp() + 200);
+
+        let proof_cid = String::from_str(&e, "QmExpired");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: task is not active")]
+    fn test_approve_cancelled_task_fails() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 10000),
+        );
+
+        reg_client.cancel_task(&admin, &task_id);
+
+        let proof_cid = String::from_str(&e, "QmCancelled");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: reward exceeds task budget")]
+    fn test_resolve_dispute_approve_over_budget() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmOverBudget");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+        client.resolve_dispute(&admin, &user, &task_id, &true, &9999);
+    }
+
+    #[test]
+    fn test_total_paid_after_approve() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        assert_eq!(client.total_paid(), 0);
+
+        let proof_cid = String::from_str(&e, "QmTotal1");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        assert_eq!(client.total_paid(), 1000);
+    }
+
+    #[test]
+    fn test_total_paid_after_dispute_resolve() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        assert_eq!(client.total_paid(), 0);
+
+        let proof_cid = String::from_str(&e, "QmTotalDispute");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+        client.resolve_dispute(&admin, &user, &task_id, &true, &1000);
+
+        assert_eq!(client.total_paid(), 1000);
+    }
+
+    #[test]
+    fn test_total_paid_unaffected_by_rejection() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmTotalRej");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.reject_proof(&oracle, &user, &task_id);
+
+        assert_eq!(client.total_paid(), 0);
+    }
+
+    #[test]
+    fn test_pause_blocks_submit_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        let proof_cid = String::from_str(&e, "QmPauseSubmit");
+        let result = client.try_submit_proof(&oracle, &user, &task_id, &proof_cid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_approve_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseApprove");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        client.pause(&admin);
+        let result = client.try_approve_proof(&oracle, &user, &task_id, &50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_dispute_proof() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseDispute");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        client.pause(&admin);
+        let result = client.try_dispute_proof(&admin, &user, &task_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pause_blocks_resolve_dispute() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmPauseResolve");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+
+        client.pause(&admin);
+        let result = client.try_resolve_dispute(&admin, &user, &task_id, &true, &50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unpause_allows_operations() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        let proof_cid = String::from_str(&e, "QmUnpause");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        let verification = client.get_verification(&task_id, &user);
+        assert_eq!(verification.status, VerificationStatus::Pending);
+    }
+
+    #[test]
+    fn test_pause_unpause_only_admin() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let someone = Address::generate(&e);
+        let result = client.try_pause(&someone);
+        assert!(result.is_err());
+
+        let result = client.try_unpause(&someone);
+        assert!(result.is_err());
     }
 }

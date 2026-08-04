@@ -45,7 +45,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "8724990dc2fc7e6bbf64e3c87b245ff1982a28f38ec6bbae54f0434465c86ae8"
+                  "bytes": "fe8775d4c9f0c434b74121905c4d4b552d59999646ea3e1a493fff7a2d90bec9"
                 },
                 {
                   "i128": "1000"
@@ -136,6 +136,33 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "Sponsor"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Task"
                   },
                   {
@@ -191,7 +218,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "8724990dc2fc7e6bbf64e3c87b245ff1982a28f38ec6bbae54f0434465c86ae8"
+                      "bytes": "fe8775d4c9f0c434b74121905c4d4b552d59999646ea3e1a493fff7a2d90bec9"
                     }
                   },
                   {
@@ -263,22 +290,6 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "Sponsors"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                          }
-                        ]
                       }
                     },
                     {

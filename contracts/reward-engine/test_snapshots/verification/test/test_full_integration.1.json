@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "f807551160682338c907c30b86732665a2107472283d57577a7647797bf0f66a"
+                  "bytes": "a9c4807103dff4ccb5ce987f9ee1f7f15ed1cb37dda95b576b76298cb97322de"
                 },
                 {
                   "i128": "1000"
@@ -316,6 +316,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "minter"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "name"
                       },
                       "val": {
@@ -500,7 +508,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "f807551160682338c907c30b86732665a2107472283d57577a7647797bf0f66a"
+                      "bytes": "a9c4807103dff4ccb5ce987f9ee1f7f15ed1cb37dda95b576b76298cb97322de"
                     }
                   },
                   {
@@ -755,6 +763,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalPaid"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "1000"
                       }
                     },
                     {

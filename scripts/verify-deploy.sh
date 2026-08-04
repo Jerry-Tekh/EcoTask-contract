@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-NETWORK="testnet"
+
+NETWORK="${NETWORK:-testnet}"
+
+: "${SOROBAN_SECRET_KEY:?SOROBAN_SECRET_KEY is required}"
+: "${ECO_TOKEN_ID:?ECO_TOKEN_ID is required}"
+: "${TASK_REGISTRY_ID:?TASK_REGISTRY_ID is required}"
+: "${REWARD_ENGINE_ID:?REWARD_ENGINE_ID is required}"
+: "${TEST_USER:?TEST_USER is required}"
+
 echo "Verifying contracts on $NETWORK..."
 
 soroban contract invoke \
@@ -40,4 +48,4 @@ soroban contract invoke \
   --task_id 0 \
   --user "$TEST_USER"
 
-echo "All contracts verified"
+echo "All contracts verified on $NETWORK"

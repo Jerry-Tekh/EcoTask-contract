@@ -10,7 +10,8 @@ jobs:
         with:
           target: wasm32v1-none
           components: clippy, rustfmt
-      - run: cargo build --target wasm32v1-none --release
-      - run: cargo test
-      - run: cargo clippy -- -D warnings
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target wasm32v1-none --release --locked
+      - run: cargo test --workspace
+      - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --check
