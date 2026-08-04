@@ -352,7 +352,7 @@ impl RewardEngine {
             user,
             task_id,
             approved: approve,
-            reward_amount,
+            reward_amount: if approve { reward_amount } else { 0 },
         }
         .publish(&e);
     }
@@ -395,6 +395,7 @@ mod test {
     use crate::{RewardEngine, RewardEngineClient, VerificationStatus};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::BytesN;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{Address, Env, String};
 
     fn deploy_token(e: &Env, admin: &Address) -> Address {
@@ -808,5 +809,104 @@ mod test {
         e.mock_all_auths_allowing_non_root_auth();
 
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: reward exceeds task budget")]
+    fn test_approve_exceeds_task_budget() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmBudget");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.approve_proof(&oracle, &user, &task_id, &5000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: task has expired")]
+    fn test_approve_expired_task_fails() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 100),
+        );
+
+        e.ledger().set_timestamp(e.ledger().timestamp() + 200);
+
+        let proof_cid = String::from_str(&e, "QmExpired");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: task is not active")]
+    fn test_approve_cancelled_task_fails() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 10000),
+        );
+
+        reg_client.cancel_task(&admin, &task_id);
+
+        let proof_cid = String::from_str(&e, "QmCancelled");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: reward exceeds task budget")]
+    fn test_resolve_dispute_approve_over_budget() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmOverBudget");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        client.dispute_proof(&admin, &user, &task_id);
+        client.resolve_dispute(&admin, &user, &task_id, &true, &9999);
     }
 }
