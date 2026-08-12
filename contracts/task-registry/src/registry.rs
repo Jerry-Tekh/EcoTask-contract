@@ -34,6 +34,15 @@ pub struct TaskCancelledEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskExtendedEvent {
+    #[topic]
+    pub creator: Address,
+    pub task_id: u64,
+    pub new_expires_at: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SponsorAddedEvent {
     #[topic]
     pub sponsor: Address,
@@ -178,6 +187,42 @@ impl RegistryContract {
         storage::write_task(&e, &task);
     }
 
+    /// Extends the expiry of an active task. Callable by the task creator or
+    /// the admin. The new expiry must be strictly later than the current one
+    /// (i.e. a genuine extension) and still in the future.
+    pub fn extend_task_expiry(e: Env, caller: Address, task_id: u64, new_expires_at: u64) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if caller != admin && task.creator != caller {
+            panic!("registry: unauthorized");
+        }
+        if task.status != TaskStatus::Active {
+            panic!("registry: task is not active");
+        }
+        if new_expires_at <= e.ledger().timestamp() {
+            panic!("registry: expiry must be in the future");
+        }
+        if new_expires_at <= task.expires_at {
+            panic!("registry: new expiry must extend the current one");
+        }
+
+        task.expires_at = new_expires_at;
+        storage::write_task(&e, &task);
+
+        TaskExtendedEvent {
+            creator: task.creator,
+            task_id,
+            new_expires_at,
+        }
+        .publish(&e);
+    }
+
     pub fn cancel_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
 
@@ -227,7 +272,7 @@ impl RegistryContract {
     }
 
     pub fn task_count(e: Env) -> u64 {
-        storage::next_task_id(&e)
+        storage::read_task_count(&e)
     }
 
     pub fn is_task_completed(e: Env, task_id: u64, user: Address) -> bool {
@@ -236,6 +281,40 @@ impl RegistryContract {
 
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
         storage::read_creator_tasks(&e, &creator)
+    }
+
+    /// Pageable slice of the task ids created by `creator`. `cursor` is the
+    /// zero-based offset into the creator's full task list and `limit` caps
+    /// the number of ids returned.
+    pub fn get_tasks_by_creator_paged(
+        e: Env,
+        creator: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<u64> {
+        let ids = storage::read_creator_tasks(&e, &creator);
+        let start = cursor.min(ids.len());
+        let end = (start + limit).min(ids.len());
+        ids.slice(start..end)
+    }
+
+    /// Pageable listing of every task in the registry ordered by id.
+    /// `cursor` is the lowest task id to include (inclusive) and `limit` caps
+    /// the number of tasks returned. Safe for off-chain indexers to paginate
+    /// through without pulling the entire registry in one call.
+    pub fn list_tasks(e: Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Task> {
+        let count = storage::read_task_count(&e);
+        let mut tasks: soroban_sdk::Vec<Task> = soroban_sdk::Vec::new(&e);
+        let mut current = cursor;
+        let mut remaining = limit;
+        while current < count && remaining > 0 {
+            if let Some(task) = storage::read_task(&e, current) {
+                tasks.push_back(task);
+            }
+            current += 1;
+            remaining -= 1;
+        }
+        tasks
     }
 
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
@@ -255,7 +334,7 @@ impl RegistryContract {
 mod test {
     use crate::{RegistryContract, RegistryContractClient, TaskStatus};
     use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger as _};
-    use soroban_sdk::{Address, BytesN, Env, String};
+    use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
     fn setup() -> (Env, Address, RegistryContractClient<'static>) {
         let e = Env::default();
@@ -664,6 +743,222 @@ mod test {
         let other = Address::generate(&e);
         let empty = client.get_tasks_by_creator(&other);
         assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn test_get_tasks_by_creator_paged() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let mut ids = Vec::new(&e);
+        for _ in 0..5 {
+            ids.push_back(create_test_task(&client, &admin, &task_type, 1, 1000));
+        }
+
+        // First page: 2 items starting at offset 0
+        let page0 = client.get_tasks_by_creator_paged(&admin, &0, &2);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap(), ids.get(0).unwrap());
+        assert_eq!(page0.get(1).unwrap(), ids.get(1).unwrap());
+
+        // Second page: 2 items starting at offset 2
+        let page1 = client.get_tasks_by_creator_paged(&admin, &2, &2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1.get(0).unwrap(), ids.get(2).unwrap());
+        assert_eq!(page1.get(1).unwrap(), ids.get(3).unwrap());
+
+        // Last page: remaining 1 item, then empty once the cursor passes the end
+        let page2 = client.get_tasks_by_creator_paged(&admin, &4, &2);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2.get(0).unwrap(), ids.get(4).unwrap());
+
+        let empty = client.get_tasks_by_creator_paged(&admin, &10, &2);
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn test_list_tasks_pagination() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let mut ids = Vec::new(&e);
+        for _ in 0..4 {
+            ids.push_back(create_test_task(&client, &admin, &task_type, 1, 1000));
+        }
+
+        // Page 1: tasks 0..2
+        let page0 = client.list_tasks(&0, &2);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap().id, ids.get(0).unwrap());
+        assert_eq!(page0.get(1).unwrap().id, ids.get(1).unwrap());
+
+        // Page 2: tasks 2..4
+        let page1 = client.list_tasks(&2, &2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1.get(0).unwrap().id, ids.get(2).unwrap());
+        assert_eq!(page1.get(1).unwrap().id, ids.get(3).unwrap());
+
+        // Cursor past the end returns an empty page
+        let page2 = client.list_tasks(&4, &10);
+        assert_eq!(page2.len(), 0);
+
+        // A limit of 0 returns an empty page without panicking
+        let empty = client.list_tasks(&0, &0);
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn test_list_tasks_full_scan() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let all = client.list_tasks(&0, &u32::MAX);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all.get(0).unwrap().id, id0);
+        assert_eq!(all.get(1).unwrap().id, id1);
+        assert_eq!(all.get(2).unwrap().id, id2);
+    }
+
+    #[test]
+    fn test_task_count_is_stable() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        assert_eq!(client.task_count(), 0);
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        assert_eq!(id0, 0);
+        assert_eq!(client.task_count(), 1);
+
+        // Repeated reads must not advance the counter or corrupt task ids.
+        assert_eq!(client.task_count(), 1);
+        assert_eq!(client.task_count(), 1);
+
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        assert_eq!(id1, 1);
+        assert_eq!(client.task_count(), 2);
+    }
+
+    #[test]
+    fn test_extend_task_expiry() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let now = e.ledger().timestamp();
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.expires_at, now + 1000);
+
+        client.extend_task_expiry(&admin, &task_id, &(now + 5000));
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.expires_at, now + 5000);
+        assert_eq!(task.status, TaskStatus::Active);
+    }
+
+    #[test]
+    fn test_extend_task_expiry_by_creator_sponsor() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let sponsor = Address::generate(&e);
+        client.add_sponsor(&admin, &sponsor);
+
+        let now = e.ledger().timestamp();
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        let task_id = client.create_task(
+            &sponsor,
+            &String::from_str(&e, "ocean-cleanup"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(now + 1000),
+        );
+
+        client.extend_task_expiry(&sponsor, &task_id, &(now + 9000));
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.expires_at, now + 9000);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: unauthorized")]
+    fn test_extend_task_expiry_unauthorized() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let now = e.ledger().timestamp();
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        let attacker = Address::generate(&e);
+        client.extend_task_expiry(&attacker, &task_id, &(now + 9000));
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: new expiry must extend the current one")]
+    fn test_extend_task_expiry_must_increase() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let now = e.ledger().timestamp();
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.extend_task_expiry(&admin, &task_id, &(now + 500));
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task is not active")]
+    fn test_extend_expired_task_fails() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let now = e.ledger().timestamp();
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.expire_task(&admin, &task_id);
+        client.extend_task_expiry(&admin, &task_id, &(now + 9000));
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task not found")]
+    fn test_extend_missing_task_fails() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        client.extend_task_expiry(&admin, &999, &(e.ledger().timestamp() + 9000));
     }
 
     #[test]

@@ -52,6 +52,13 @@ pub fn next_task_id(e: &Env) -> u64 {
     count
 }
 
+/// Reads the number of tasks created so far (the next available task id)
+/// without mutating any storage. This is safe to call repeatedly.
+pub fn read_task_count(e: &Env) -> u64 {
+    let key = DataKey::TaskCount;
+    e.storage().instance().get(&key).unwrap_or(0)
+}
+
 pub fn write_admin(e: &Env, admin: &Address) {
     let key = DataKey::Admin;
     e.storage().instance().set(&key, admin);

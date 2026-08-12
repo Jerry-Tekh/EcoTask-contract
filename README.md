@@ -132,11 +132,14 @@ Created (Active) ──► Completed  (all slots filled)
 | `get_task(task_id) → Task` | — | Fetch full task details |
 | `complete_task(caller, task_id, user)` | caller (sponsor/admin) | Mark a task as completed for a user |
 | `expire_task(caller, task_id)` | admin | Force-expire an active task |
+| `extend_task_expiry(caller, task_id, new_expires_at)` | creator or admin | Extend an active task's expiry to a later timestamp |
 | `cancel_task(caller, task_id)` | creator | Cancel a task you created |
 | `admin_cancel_task(caller, task_id)` | admin | Cancel any active task (governance) |
 | `task_count() → u64` | — | Total tasks created (next ID) |
+| `list_tasks(cursor, limit) → Vec<Task>` | — | Pageable global task listing, ordered by task id |
 | `is_task_completed(task_id, user) → bool` | — | Check if a user completed a task |
 | `get_tasks_by_creator(creator) → Vec<u64>` | — | List all task IDs created by an address |
+| `get_tasks_by_creator_paged(creator, cursor, limit) → Vec<u64>` | — | Pageable slice of a creator's task IDs |
 | `transfer_admin(current_admin, new_admin)` | `current_admin` | Transfer admin role |
 
 **Task struct:**
@@ -162,7 +165,9 @@ pub struct Task {
 - `max_completions` must be positive
 - `expires_at` must be in the future
 
-**Access model:** Admins and approved sponsors can create and complete tasks. Only the task creator can cancel their own task. Admins can cancel any task via `admin_cancel_task`.
+**Access model:** Admins and approved sponsors can create and complete tasks. Only the task creator can cancel their own task. Admins can cancel any task via `admin_cancel_task`. Active tasks can be extended (pushed to a later expiry) by their creator or the admin via `extend_task_expiry` — useful for campaigns that outlive their original deadline without having to recreate and republish the task.
+
+**Querying & pagination:** `list_tasks(cursor, limit)` walks the global task list by id, while `get_tasks_by_creator_paged(creator, cursor, limit)` slices a creator's task list. Both are bounded reads, so off-chain indexers and the backend can paginate without pulling the whole registry in one call.
 
 ### 3. `reward-engine`
 
@@ -419,12 +424,12 @@ soroban contract invoke --id <ENGINE_ID> -- total_paid
 
 ## Testing
 
-The project has **108 tests** across unit and integration suites:
+The project has **118 tests** across unit and integration suites:
 
 | Suite | Contract | Tests | Description |
 |-------|----------|-------|-------------|
 | Unit | eco-token | 30 | Mint, transfer, burn, approve, minter role, input validation |
-| Unit | task-registry | 27 | CRUD, sponsors, completions, expiry, admin cancel, empty type |
+| Unit | task-registry | 37 | CRUD, sponsors, completions, expiry, pagination, task extension, admin cancel, empty type |
 | Unit | reward-engine | 40 | Proofs, disputes, reward guards, cross-contract validation, total paid, pause |
 | Integration | Root | 7 | Full lifecycle, dispute flow, multi-user, minter delegation, reward caps, admin cancel, emergency pause |
 
