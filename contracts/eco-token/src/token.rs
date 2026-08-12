@@ -52,6 +52,24 @@ pub struct ApproveEvent {
     pub expiration_ledger: u32,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaxSupplyUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub max_supply: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub name: String,
+    pub symbol: String,
+    pub decimal: u32,
+}
+
 #[contract]
 pub struct TokenContract;
 
@@ -75,6 +93,14 @@ impl TokenContract {
             panic!("token: amount must be positive");
         }
 
+        let supply = storage::read_supply(&e);
+        if let Some(cap) = storage::read_max_supply(&e) {
+            let new_supply = supply.checked_add(amount).expect("supply overflow");
+            if new_supply > cap {
+                panic!("token: supply cap exceeded");
+            }
+        }
+
         let balance = storage::read_balance(&e, &to);
         storage::write_balance(
             &e,
@@ -82,7 +108,6 @@ impl TokenContract {
             balance.checked_add(amount).expect("balance overflow"),
         );
 
-        let supply = storage::read_supply(&e);
         storage::write_supply(&e, supply.checked_add(amount).expect("supply overflow"));
 
         MintEvent {
@@ -134,6 +159,32 @@ impl TokenContract {
         storage::read_supply(&e)
     }
 
+    /// The hard cap on total supply, or `i128::MAX` if no cap has been set.
+    /// Minting is rejected whenever it would push the supply past this bound.
+    pub fn max_supply(e: Env) -> i128 {
+        storage::read_max_supply(&e).unwrap_or(i128::MAX)
+    }
+
+    /// Sets the hard supply cap. Admin-only. The cap must be positive and not
+    /// lower than the current supply, so an already-oversubscribed token can
+    /// never be retroactively frozen into an invalid state.
+    pub fn set_max_supply(e: Env, caller: Address, max_supply: i128) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("token: unauthorized");
+        }
+        if max_supply <= 0 {
+            panic!("token: max supply must be positive");
+        }
+        if max_supply < storage::read_supply(&e) {
+            panic!("token: max supply below current supply");
+        }
+        storage::write_max_supply(&e, max_supply);
+
+        MaxSupplyUpdatedEvent { admin, max_supply }.publish(&e);
+    }
+
     pub fn name(e: Env) -> String {
         storage::read_name(&e)
     }
@@ -144,6 +195,29 @@ impl TokenContract {
 
     pub fn decimal(e: Env) -> u32 {
         storage::read_decimal(&e)
+    }
+
+    /// SEP-0041 alias for `decimal`.
+    pub fn decimals(e: Env) -> u32 {
+        storage::read_decimal(&e)
+    }
+
+    /// Updates token metadata (SEP-0041 `set_metadata`). Admin-only.
+    pub fn set_metadata(e: Env, caller: Address, name: String, symbol: String, decimal: u32) {
+        caller.require_auth();
+        let admin = storage::read_admin(&e);
+        if caller != admin {
+            panic!("token: unauthorized");
+        }
+        storage::write_metadata(&e, &name, &symbol, &decimal);
+
+        MetadataUpdatedEvent {
+            admin,
+            name,
+            symbol,
+            decimal,
+        }
+        .publish(&e);
     }
 
     pub fn admin(e: Env) -> Address {
@@ -697,13 +771,13 @@ mod test {
         let transfer_from_topics: soroban_sdk::Vec<Val> = vec![
             &e,
             Symbol::new(&e, "transfer_from_event").to_val(),
-            (&owner).into_val(&e),
-            (&recipient).into_val(&e),
-            (&spender).into_val(&e),
+            owner.into_val(&e),
+            recipient.into_val(&e),
+            spender.into_val(&e),
         ];
         let transfer_from_data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
             &e,
-            [(Symbol::new(&e, "amount"), (&300i128).into_val(&e))],
+            [(Symbol::new(&e, "amount"), 300i128.into_val(&e))],
         )
         .into_val(&e);
 
@@ -975,5 +1049,220 @@ mod test {
 
         client.approve(&owner, &spender, &0, &(e.ledger().sequence() + 100));
         assert_eq!(client.allowance(&owner, &spender), 0);
+    }
+
+    #[test]
+    fn test_max_supply_defaults_to_no_cap() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        assert_eq!(client.max_supply(), i128::MAX);
+    }
+
+    #[test]
+    fn test_set_max_supply_and_mint_at_cap() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_max_supply(&admin, &1000);
+        assert_eq!(client.max_supply(), 1000);
+
+        client.mint(&user, &1000);
+        assert_eq!(client.balance(&user), 1000);
+        assert_eq!(client.total_supply(), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: supply cap exceeded")]
+    fn test_mint_exceeding_supply_cap_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_max_supply(&admin, &1000);
+        client.mint(&user, &600);
+        client.mint(&user, &500);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: supply cap exceeded")]
+    fn test_mint_over_cap_on_first_issue_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_max_supply(&admin, &500);
+        client.mint(&user, &501);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: max supply must be positive")]
+    fn test_set_zero_max_supply_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_max_supply(&admin, &0);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: max supply below current supply")]
+    fn test_set_max_supply_below_current_supply_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&user, &1000);
+        client.set_max_supply(&admin, &500);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: unauthorized")]
+    fn test_set_max_supply_non_admin_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let attacker = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_max_supply(&attacker, &1000);
+    }
+
+    #[test]
+    fn test_set_metadata_updates_token_info() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_metadata(
+            &admin,
+            &String::from_str(&e, "EcoTask Token"),
+            &String::from_str(&e, "ECOT"),
+            &6,
+        );
+
+        assert_eq!(client.name(), String::from_str(&e, "EcoTask Token"));
+        assert_eq!(client.symbol(), String::from_str(&e, "ECOT"));
+        assert_eq!(client.decimal(), 6);
+        assert_eq!(client.decimals(), 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: unauthorized")]
+    fn test_set_metadata_non_admin_fails() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let attacker = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_metadata(
+            &attacker,
+            &String::from_str(&e, "Hijacked"),
+            &String::from_str(&e, "HACK"),
+            &7,
+        );
+    }
+
+    #[test]
+    fn test_decimals_matches_decimal() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        assert_eq!(client.decimals(), 7);
+        assert_eq!(client.decimal(), client.decimals());
     }
 }

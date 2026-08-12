@@ -96,7 +96,10 @@ The EcoTask native token contract. Implements the Stellar SEP-0041 token interfa
 | `transfer_from(from, to, spender, amount)` | `spender` | Transfer using an approved allowance |
 | `balance(id)` | — | Read the ECO balance of an address |
 | `total_supply()` | — | Read total ECO supply |
-| `name()`, `symbol()`, `decimal()` | — | Token metadata |
+| `max_supply()` | — | Hard supply cap (`i128::MAX` if unset) |
+| `set_max_supply(caller, max_supply)` | `caller` (admin only) | Set the hard supply cap for future minting |
+| `name()`, `symbol()`, `decimal()`, `decimals()` | — | Token metadata (SEP-0041 includes `decimals`) |
+| `set_metadata(caller, name, symbol, decimal)` | `caller` (admin only) | Update token metadata (SEP-0041 `set_metadata`) |
 | `admin()` | — | Current admin address |
 | `minter()` | — | Current minter address |
 | `set_minter(caller, new_minter)` | `caller` (admin only) | Assign a new minter |
@@ -104,9 +107,11 @@ The EcoTask native token contract. Implements the Stellar SEP-0041 token interfa
 | `allowance(owner, spender)` | — | Read current allowance for a spender |
 
 **Input validation:**
-- `mint` requires `amount > 0`
+- `mint` requires `amount > 0` and, once a cap is set, `supply + amount <= max_supply`
 - `burn` requires `amount > 0` and sufficient balance
 - `approve` requires `amount >= 0` and `expiration_ledger > current ledger sequence`
+- `set_max_supply` requires a positive cap that is not below the current supply
+- `set_metadata` is admin-only (SEP-0041)
 
 ### 2. `task-registry`
 
@@ -431,14 +436,14 @@ soroban contract invoke --id <ENGINE_ID> -- total_paid
 
 ## Testing
 
-The project has **129 tests** across unit and integration suites:
+The project has **141 tests** across unit and integration suites:
 
 | Suite | Contract | Tests | Description |
 |-------|----------|-------|-------------|
-| Unit | eco-token | 30 | Mint, transfer, burn, approve, minter role, input validation |
+| Unit | eco-token | 40 | Mint, transfer, burn, approve, minter role, supply cap, metadata, input validation |
 | Unit | task-registry | 37 | CRUD, sponsors, completions, expiry, pagination, task extension, admin cancel, empty type |
 | Unit | reward-engine | 51 | Proofs, disputes, reward guards, multi-oracle, pagination, total paid, pause |
-| Integration | Root | 7 | Full lifecycle, dispute flow, multi-user, minter delegation, reward caps, admin cancel, emergency pause |
+| Integration | Root | 9 | Full lifecycle, dispute flow, multi-user, minter delegation, reward caps, admin cancel, emergency pause, supply cap |
 
 ```bash
 # Run everything
@@ -532,6 +537,7 @@ NETWORK=testnet ./scripts/verify-deploy.sh
 ### Design properties
 
 - **Minting is minter-only.** Only the address stored as `minter` (the reward engine) can mint new ECO tokens. Admin assigns minter via `set_minter()`.
+- **Hard supply cap.** The admin can set a `max_supply`; no mint — including reward-engine payouts — can push total supply past it, bounding inflation.
 - **Oracle is separated from admin.** The engine enforces that oracle and admin are different addresses at initialization.
 - **Double-claim prevention.** The registry records each `(task_id, user)` completion pair and rejects duplicates.
 - **Overflow protection.** All balance arithmetic uses `checked_add` / `checked_sub`.

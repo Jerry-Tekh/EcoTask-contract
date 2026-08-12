@@ -317,3 +317,97 @@ fn test_emergency_pause_blocks_rewards() {
     let token_client = eco_token::TokenContractClient::new(&e, &token_id);
     assert_eq!(token_client.balance(&user), 500);
 }
+
+#[test]
+fn test_supply_cap_blocks_engine_mint() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+
+    // Cap the token at 400 ECO: the 500 ECO reward cannot be issued.
+    token_client.set_max_supply(&admin, &400);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "recycling"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmCap");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+
+    let result = engine_client.try_approve_proof(&oracle, &user, &task_id, &500);
+    assert!(result.is_err());
+
+    // The task is not marked completed and nothing was paid out.
+    assert!(!reg_client.is_task_completed(&task_id, &user));
+    assert_eq!(engine_client.total_paid(), 0);
+    assert_eq!(token_client.balance(&user), 0);
+
+    // Raising the cap unlocks the same payout.
+    token_client.set_max_supply(&admin, &1000);
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+
+    assert_eq!(token_client.balance(&user), 500);
+    assert_eq!(engine_client.total_paid(), 500);
+    assert!(reg_client.is_task_completed(&task_id, &user));
+}
+
+#[test]
+fn test_supply_cap_counts_cumulative_emissions() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user1 = Address::generate(&e);
+    let user2 = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+
+    // Cumulative emissions are capped: two 400 ECO payouts exceed a 600 cap.
+    token_client.set_max_supply(&admin, &600);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "beach-cleanup"),
+        &loc_hash,
+        &400,
+        &2,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof1 = String::from_str(&e, "QmCap1");
+    engine_client.submit_proof(&oracle, &user1, &task_id, &proof1);
+    engine_client.approve_proof(&oracle, &user1, &task_id, &400);
+
+    let proof2 = String::from_str(&e, "QmCap2");
+    engine_client.submit_proof(&oracle, &user2, &task_id, &proof2);
+    let result = engine_client.try_approve_proof(&oracle, &user2, &task_id, &400);
+    assert!(result.is_err());
+
+    assert_eq!(token_client.total_supply(), 400);
+    assert_eq!(engine_client.total_paid(), 400);
+}

@@ -79,6 +79,16 @@ pub fn read_supply(e: &Env) -> i128 {
         .unwrap_or(0)
 }
 
+pub fn write_max_supply(e: &Env, amount: i128) {
+    e.storage()
+        .instance()
+        .set(&symbol_short!("maxsupply"), &amount);
+}
+
+pub fn read_max_supply(e: &Env) -> Option<i128> {
+    e.storage().instance().get(&symbol_short!("maxsupply"))
+}
+
 pub fn write_allowance(e: &Env, owner: &Address, spender: &Address, allowance: &Allowance) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
     e.storage().persistent().set(&key, allowance);
