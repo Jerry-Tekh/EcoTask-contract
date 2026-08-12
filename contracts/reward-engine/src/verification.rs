@@ -72,6 +72,20 @@ pub struct DisputeResolvedEvent {
     pub reward_amount: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleAddedEvent {
+    #[topic]
+    pub oracle: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleRemovedEvent {
+    #[topic]
+    pub oracle: Address,
+}
+
 #[contract]
 pub struct RewardEngine;
 
@@ -80,6 +94,41 @@ fn require_not_paused(e: &Env) {
     if storage::is_paused(e) {
         panic!("engine: contract is paused");
     }
+}
+
+/// Panics unless `addr` is one of the registered oracles.
+fn require_oracle(e: &Env, addr: &Address) {
+    if !storage::is_registered_oracle(e, addr) {
+        panic!("engine: unauthorized");
+    }
+}
+
+/// Panics unless `addr` is the admin.
+fn require_admin(e: &Env, addr: &Address) {
+    let admin = storage::read_admin(e);
+    if addr != &admin {
+        panic!("engine: unauthorized");
+    }
+}
+
+/// Collects up to `limit` pending verifications starting at offset `cursor`
+/// into the full verification log, skipping already-resolved entries.
+fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verification> {
+    let keys = storage::read_verification_keys(e);
+    let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
+    let mut idx = cursor;
+    let mut collected: u32 = 0;
+    while idx < keys.len() && collected < limit {
+        let key = keys.get(idx).unwrap();
+        if let Some(v) = storage::read_verification(e, key.task_id, &key.user) {
+            if v.status == VerificationStatus::Pending {
+                result.push_back(v);
+                collected += 1;
+            }
+        }
+        idx += 1;
+    }
+    result
 }
 
 #[contractimpl]
@@ -94,42 +143,74 @@ impl RewardEngine {
         storage::write_admin(&e, &admin);
         storage::write_token(&e, &token);
         storage::write_registry(&e, &registry);
-        storage::write_oracle(&e, &oracle);
+        storage::write_oracles(&e, &vec![&e, oracle]);
     }
 
     pub fn set_oracle(e: Env, caller: Address, new_oracle: Address) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
+        require_admin(&e, &caller);
+        if new_oracle == caller {
+            panic!("engine: oracle must be different from admin");
         }
-        storage::write_oracle(&e, &new_oracle);
+        storage::write_oracles(&e, &vec![&e, new_oracle]);
+    }
+
+    /// Registers an additional oracle. Any registered oracle may submit,
+    /// approve, or reject proofs.
+    pub fn add_oracle(e: Env, caller: Address, new_oracle: Address) {
+        caller.require_auth();
+        require_admin(&e, &caller);
+        let admin = storage::read_admin(&e);
+        if new_oracle == admin {
+            panic!("engine: oracle must be different from admin");
+        }
+        if storage::is_registered_oracle(&e, &new_oracle) {
+            panic!("engine: oracle already registered");
+        }
+        storage::push_oracle(&e, &new_oracle);
+        OracleAddedEvent { oracle: new_oracle }.publish(&e);
+    }
+
+    /// Removes a registered oracle. The last remaining oracle cannot be
+    /// removed, so the engine always keeps at least one active oracle.
+    pub fn remove_oracle(e: Env, caller: Address, oracle: Address) {
+        caller.require_auth();
+        require_admin(&e, &caller);
+        if !storage::is_registered_oracle(&e, &oracle) {
+            panic!("engine: oracle not registered");
+        }
+        if storage::read_oracles(&e).len() <= 1 {
+            panic!("engine: cannot remove the last oracle");
+        }
+        storage::remove_oracle_from_list(&e, &oracle);
+        OracleRemovedEvent { oracle }.publish(&e);
+    }
+
+    /// Returns the full roster of registered oracles.
+    pub fn get_oracles(e: Env) -> soroban_sdk::Vec<Address> {
+        storage::read_oracles(&e)
+    }
+
+    /// Returns true if `addr` is a registered oracle.
+    pub fn is_oracle(e: Env, addr: Address) -> bool {
+        storage::is_registered_oracle(&e, &addr)
     }
 
     pub fn set_token(e: Env, caller: Address, new_token: Address) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
         storage::write_token(&e, &new_token);
     }
 
     pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
         storage::write_registry(&e, &new_registry);
     }
 
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
         if min_reward <= 0 {
             panic!("engine: min reward must be positive");
         }
@@ -141,19 +222,13 @@ impl RewardEngine {
 
     pub fn pause(e: Env, caller: Address) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
         storage::set_paused(&e, true);
     }
 
     pub fn unpause(e: Env, caller: Address) {
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
         storage::set_paused(&e, false);
     }
 
@@ -164,10 +239,7 @@ impl RewardEngine {
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
         require_not_paused(&e);
         oracle.require_auth();
-        let stored_oracle = storage::read_oracle(&e);
-        if oracle != stored_oracle {
-            panic!("engine: unauthorized");
-        }
+        require_oracle(&e, &oracle);
 
         if storage::read_verification(&e, task_id, &user).is_some() {
             panic!("engine: proof already submitted");
@@ -186,6 +258,7 @@ impl RewardEngine {
 
         storage::write_verification(&e, task_id, &user, &verification);
         storage::push_verification_key(&e, task_id, &user);
+        storage::push_user_verification_key(&e, &user, task_id);
 
         ProofSubmittedEvent {
             oracle,
@@ -204,10 +277,7 @@ impl RewardEngine {
     ) {
         require_not_paused(&e);
         oracle.require_auth();
-        let stored_oracle = storage::read_oracle(&e);
-        if oracle != stored_oracle {
-            panic!("engine: unauthorized");
-        }
+        require_oracle(&e, &oracle);
 
         let mut verification = match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -276,10 +346,7 @@ impl RewardEngine {
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         oracle.require_auth();
-        let stored_oracle = storage::read_oracle(&e);
-        if oracle != stored_oracle {
-            panic!("engine: unauthorized");
-        }
+        require_oracle(&e, &oracle);
 
         let mut verification = match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -306,10 +373,7 @@ impl RewardEngine {
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
 
         let mut verification = match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -339,10 +403,7 @@ impl RewardEngine {
     ) {
         require_not_paused(&e);
         caller.require_auth();
-        let admin = storage::read_admin(&e);
-        if caller != admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &caller);
 
         let mut verification = match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -420,17 +481,39 @@ impl RewardEngine {
         }
     }
 
+    /// Returns up to `limit` pending verifications starting from `cursor`
+    /// (a zero-based offset into the full verification log). Bounded reads
+    /// make this safe for off-chain indexers to paginate at scale.
+    pub fn get_pending_verifications_paged(
+        e: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<Verification> {
+        collect_pending(&e, cursor, limit)
+    }
+
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
-        let keys = storage::read_verification_keys(&e);
-        let mut pending: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(&e);
-        for key in keys.iter() {
-            if let Some(v) = storage::read_verification(&e, key.task_id, &key.user) {
-                if v.status == VerificationStatus::Pending {
-                    pending.push_back(v);
-                }
+        collect_pending(&e, 0, u32::MAX)
+    }
+
+    /// Pageable history of a single user's verifications across all tasks,
+    /// ordered by submission.
+    pub fn get_verifications_by_user(
+        e: Env,
+        user: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<Verification> {
+        let tasks = storage::read_user_verification_tasks(&e, &user);
+        let start = cursor.min(tasks.len());
+        let end = (start + limit).min(tasks.len());
+        let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(&e);
+        for task_id in tasks.slice(start..end).iter() {
+            if let Some(v) = storage::read_verification(&e, task_id, &user) {
+                result.push_back(v);
             }
         }
-        pending
+        result
     }
 
     pub fn total_paid(e: Env) -> i128 {
@@ -439,10 +522,7 @@ impl RewardEngine {
 
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
-        let stored_admin = storage::read_admin(&e);
-        if current_admin != stored_admin {
-            panic!("engine: unauthorized");
-        }
+        require_admin(&e, &current_admin);
         if new_admin == current_admin {
             panic!("engine: new admin must be different");
         }
@@ -1132,5 +1212,219 @@ mod test {
 
         let result = client.try_unpause(&someone);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_oracle_and_submit() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let second_oracle = Address::generate(&e);
+        client.add_oracle(&admin, &second_oracle);
+
+        assert_eq!(client.get_oracles().len(), 2);
+        assert!(client.is_oracle(&oracle));
+        assert!(client.is_oracle(&second_oracle));
+
+        // A second registered oracle can submit and approve independently.
+        let proof_cid = String::from_str(&e, "QmSecondOracle");
+        client.submit_proof(&second_oracle, &user, &task_id, &proof_cid);
+        client.approve_proof(&second_oracle, &user, &task_id, &1000);
+
+        let v = client.get_verification(&task_id, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
+        assert_eq!(v.oracle, second_oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: oracle already registered")]
+    fn test_add_duplicate_oracle_fails() {
+        let (e, admin, oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.add_oracle(&admin, &oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: oracle must be different from admin")]
+    fn test_add_admin_as_oracle_fails() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.add_oracle(&admin, &admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized")]
+    fn test_add_oracle_non_admin_fails() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let attacker = Address::generate(&e);
+        let second_oracle = Address::generate(&e);
+        client.add_oracle(&attacker, &second_oracle);
+    }
+
+    #[test]
+    fn test_remove_oracle_revokes_access() {
+        let (e, admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let second_oracle = Address::generate(&e);
+        client.add_oracle(&admin, &second_oracle);
+        assert!(client.is_oracle(&second_oracle));
+
+        client.remove_oracle(&admin, &second_oracle);
+        assert!(!client.is_oracle(&second_oracle));
+        assert_eq!(client.get_oracles().len(), 1);
+
+        // The removed oracle can no longer submit proofs.
+        let proof_cid = String::from_str(&e, "QmRemovedOracle");
+        let result = client.try_submit_proof(&second_oracle, &user, &task_id, &proof_cid);
+        assert!(result.is_err());
+
+        // The original oracle still works.
+        let proof_cid = String::from_str(&e, "QmOriginal");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: cannot remove the last oracle")]
+    fn test_remove_last_oracle_fails() {
+        let (e, admin, oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.remove_oracle(&admin, &oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: oracle not registered")]
+    fn test_remove_unregistered_oracle_fails() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let stranger = Address::generate(&e);
+        client.remove_oracle(&admin, &stranger);
+    }
+
+    #[test]
+    fn test_get_pending_verifications_paged() {
+        let (e, _admin, oracle, user1, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let user2 = Address::generate(&e);
+        let user3 = Address::generate(&e);
+
+        let p1 = String::from_str(&e, "QmPage1");
+        client.submit_proof(&oracle, &user1, &task_id, &p1);
+
+        let p2 = String::from_str(&e, "QmPage2");
+        client.submit_proof(&oracle, &user2, &task_id, &p2);
+
+        let p3 = String::from_str(&e, "QmPage3");
+        client.submit_proof(&oracle, &user3, &task_id, &p3);
+
+        // First page of 2
+        let page0 = client.get_pending_verifications_paged(&0, &2);
+        assert_eq!(page0.len(), 2);
+
+        // Second page of 2 -> only 1 remains
+        let page1 = client.get_pending_verifications_paged(&2, &2);
+        assert_eq!(page1.len(), 1);
+
+        // Cursor past the end -> empty
+        let page2 = client.get_pending_verifications_paged(&10, &2);
+        assert_eq!(page2.len(), 0);
+    }
+
+    #[test]
+    fn test_get_pending_verifications_paged_skips_resolved() {
+        let (e, _admin, oracle, user1, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let user2 = Address::generate(&e);
+
+        let p1 = String::from_str(&e, "QmResolved1");
+        client.submit_proof(&oracle, &user1, &task_id, &p1);
+        client.approve_proof(&oracle, &user1, &task_id, &1000);
+
+        let p2 = String::from_str(&e, "QmStillPending");
+        client.submit_proof(&oracle, &user2, &task_id, &p2);
+
+        // The resolved entry is skipped, only the pending one is returned.
+        let page = client.get_pending_verifications_paged(&0, &10);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page.get(0).unwrap().user, user2);
+    }
+
+    #[test]
+    fn test_get_verifications_by_user() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let first_task = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 10000),
+        );
+        let loc_hash2 = soroban_sdk::BytesN::<32>::random(&e);
+        let second_task = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "recycling"),
+            &loc_hash2,
+            &500,
+            &1,
+            &(e.ledger().timestamp() + 10000),
+        );
+
+        let p1 = String::from_str(&e, "QmFirst");
+        engine_client.submit_proof(&oracle, &user, &first_task, &p1);
+        let p2 = String::from_str(&e, "QmSecond");
+        engine_client.submit_proof(&oracle, &user, &second_task, &p2);
+
+        let all = engine_client.get_verifications_by_user(&user, &0, &10);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all.get(0).unwrap().task_id, first_task);
+        assert_eq!(all.get(1).unwrap().task_id, second_task);
+
+        let page0 = engine_client.get_verifications_by_user(&user, &0, &1);
+        assert_eq!(page0.len(), 1);
+        assert_eq!(page0.get(0).unwrap().task_id, first_task);
+
+        let page1 = engine_client.get_verifications_by_user(&user, &1, &1);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap().task_id, second_task);
+
+        let empty = engine_client.get_verifications_by_user(&user, &5, &2);
+        assert_eq!(empty.len(), 0);
+    }
+
+    #[test]
+    fn test_verifications_by_user_empty_for_stranger() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let stranger = Address::generate(&e);
+        let result = client.get_verifications_by_user(&stranger, &0, &10);
+        assert_eq!(result.len(), 0);
     }
 }

@@ -190,10 +190,17 @@ Submitted (Pending) ──► Approved (mints ECO)
 | `submit_proof(oracle, user, task_id, proof_cid)` | oracle | Submit an IPFS proof CID for verification |
 | `approve_proof(oracle, user, task_id, reward_amount)` | oracle | Approve a proof and mint ECO reward |
 | `reject_proof(oracle, user, task_id)` | oracle | Reject a proof (no payout) |
+| `add_oracle(caller, new_oracle)` | admin | Register an additional oracle |
+| `remove_oracle(caller, oracle)` | admin | Remove an oracle (last one cannot be removed) |
+| `set_oracle(caller, new_oracle)` | admin | Replace the entire oracle roster with a single oracle |
+| `get_oracles() → Vec<Address>` | — | List all registered oracles |
+| `is_oracle(addr) → bool` | — | Check if an address is a registered oracle |
 | `dispute_proof(caller, user, task_id)` | admin | Escalate a pending or rejected proof to dispute |
 | `resolve_dispute(caller, user, task_id, approve, reward_amount)` | admin | Resolve a disputed proof |
 | `get_verification(task_id, user) → Verification` | — | Fetch verification details |
 | `get_pending_verifications() → Vec<Verification>` | — | List all pending verifications |
+| `get_pending_verifications_paged(cursor, limit) → Vec<Verification>` | — | Pageable list of pending verifications |
+| `get_verifications_by_user(user, cursor, limit) → Vec<Verification>` | — | Pageable history of a user's verifications |
 | `total_paid() → i128` | — | Cumulative ECO minted through this engine |
 | `pause(caller)` | admin | Emergency pause — blocks all proof operations |
 | `unpause(caller)` | admin | Resume operations after pause |
@@ -239,10 +246,10 @@ The system has four distinct roles. Separation of duties prevents any single par
 |------|-------------|--------|
 | **Admin** | Deployer (transferable) | Configure contracts, manage sponsors, cancel tasks, emergency pause, resolve disputes |
 | **Minter** | Reward engine address | Mint new ECO tokens (set by admin via `set_minter`) |
-| **Oracle** | Off-chain verification service | Submit proofs, approve/reject proofs and trigger payouts |
+| **Oracle** | Off-chain verification service(s) | Submit proofs, approve/reject proofs and trigger payouts |
 | **Sponsor** | NGOs, companies, governments | Create tasks, mark tasks as completed |
 
-**Critical separation:** The admin and oracle must be different addresses. This prevents a single compromised key from both approving proofs and reconfiguring the contract. The minter must be the reward engine — no direct admin minting.
+**Critical separation:** The admin and oracle must be different addresses. This prevents a single compromised key from both approving proofs and reconfiguring the contract. The minter must be the reward engine — no direct admin minting. The engine supports a **roster of oracles** (`add_oracle` / `remove_oracle`) so verification duties can be shared or rotated without re-deploying; the final oracle can never be removed, so the engine always retains at least one operator.
 
 ---
 
@@ -424,13 +431,13 @@ soroban contract invoke --id <ENGINE_ID> -- total_paid
 
 ## Testing
 
-The project has **118 tests** across unit and integration suites:
+The project has **129 tests** across unit and integration suites:
 
 | Suite | Contract | Tests | Description |
 |-------|----------|-------|-------------|
 | Unit | eco-token | 30 | Mint, transfer, burn, approve, minter role, input validation |
 | Unit | task-registry | 37 | CRUD, sponsors, completions, expiry, pagination, task extension, admin cancel, empty type |
-| Unit | reward-engine | 40 | Proofs, disputes, reward guards, cross-contract validation, total paid, pause |
+| Unit | reward-engine | 51 | Proofs, disputes, reward guards, multi-oracle, pagination, total paid, pause |
 | Integration | Root | 7 | Full lifecycle, dispute flow, multi-user, minter delegation, reward caps, admin cancel, emergency pause |
 
 ```bash

@@ -28,11 +28,12 @@ pub enum DataKey {
     Admin,
     Token,
     Registry,
-    Oracle,
+    Oracles,
     Verification(u64, Address),
     MinReward,
     MaxReward,
     VerificationList,
+    UserVerifications(Address),
     TotalPaid,
     Paused,
 }
@@ -79,14 +80,38 @@ pub fn read_registry(e: &Env) -> Address {
     e.storage().instance().get(&key).unwrap()
 }
 
-pub fn write_oracle(e: &Env, oracle: &Address) {
-    let key = DataKey::Oracle;
-    e.storage().instance().set(&key, oracle);
+pub fn write_oracles(e: &Env, oracles: &Vec<Address>) {
+    let key = DataKey::Oracles;
+    e.storage().instance().set(&key, oracles);
 }
 
-pub fn read_oracle(e: &Env) -> Address {
-    let key = DataKey::Oracle;
-    e.storage().instance().get(&key).unwrap()
+pub fn read_oracles(e: &Env) -> Vec<Address> {
+    let key = DataKey::Oracles;
+    e.storage().instance().get(&key).unwrap_or(Vec::new(e))
+}
+
+pub fn push_oracle(e: &Env, oracle: &Address) {
+    let key = DataKey::Oracles;
+    let mut list: Vec<Address> = e.storage().instance().get(&key).unwrap_or(Vec::new(e));
+    list.push_back(oracle.clone());
+    e.storage().instance().set(&key, &list);
+}
+
+pub fn remove_oracle_from_list(e: &Env, oracle: &Address) {
+    let key = DataKey::Oracles;
+    let list: Vec<Address> = e.storage().instance().get(&key).unwrap_or(Vec::new(e));
+    let mut filtered: Vec<Address> = Vec::new(e);
+    for o in list.iter() {
+        if o != *oracle {
+            filtered.push_back(o);
+        }
+    }
+    e.storage().instance().set(&key, &filtered);
+}
+
+pub fn is_registered_oracle(e: &Env, addr: &Address) -> bool {
+    let oracles = read_oracles(e);
+    oracles.iter().any(|o| o == *addr)
 }
 
 pub fn write_verification(e: &Env, task_id: u64, user: &Address, v: &Verification) {
@@ -137,6 +162,18 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
 pub fn read_verification_keys(e: &Env) -> Vec<VerificationKey> {
     let key = DataKey::VerificationList;
     e.storage().instance().get(&key).unwrap_or(Vec::new(e))
+}
+
+pub fn push_user_verification_key(e: &Env, user: &Address, task_id: u64) {
+    let key = DataKey::UserVerifications(user.clone());
+    let mut list: Vec<u64> = e.storage().persistent().get(&key).unwrap_or(Vec::new(e));
+    list.push_back(task_id);
+    e.storage().persistent().set(&key, &list);
+}
+
+pub fn read_user_verification_tasks(e: &Env, user: &Address) -> Vec<u64> {
+    let key = DataKey::UserVerifications(user.clone());
+    e.storage().persistent().get(&key).unwrap_or(Vec::new(e))
 }
 
 pub fn add_total_paid(e: &Env, amount: i128) {
