@@ -449,4 +449,3 @@ fn test_oracle_approval_fails_for_desponsored_creator() {
 
     engine_client.approve_proof(&oracle, &user, &task_id, &500);
 }
-
