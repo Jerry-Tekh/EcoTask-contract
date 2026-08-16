@@ -411,3 +411,42 @@ fn test_supply_cap_counts_cumulative_emissions() {
     assert_eq!(token_client.total_supply(), 400);
     assert_eq!(engine_client.total_paid(), 400);
 }
+
+#[test]
+#[should_panic(expected = "registry: sponsor revoked")]
+fn test_oracle_approval_fails_for_desponsored_creator() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let sponsor = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    reg_client.add_sponsor(&admin, &sponsor);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &sponsor,
+        &String::from_str(&e, "tree-planting"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmSponsorRevokedProof");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+
+    reg_client.remove_sponsor(&admin, &sponsor);
+
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+}
+

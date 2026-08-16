@@ -146,6 +146,11 @@ impl RegistryContract {
             None => panic!("registry: task not found"),
         };
 
+        let admin = storage::read_admin(&e);
+        if task.creator != admin && !storage::is_sponsor(&e, &task.creator) {
+            panic!("registry: sponsor revoked");
+        }
+
         if task.status != TaskStatus::Active {
             panic!("registry: task is not active");
         }
@@ -1085,5 +1090,49 @@ mod test {
 
         client.complete_task(&admin, &task_id, &user);
         client.admin_cancel_task(&admin, &task_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: sponsor revoked")]
+    fn test_complete_task_desponsored_creator_fails() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let sponsor = Address::generate(&e);
+        client.add_sponsor(&admin, &sponsor);
+
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        let task_id = client.create_task(
+            &sponsor,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
+
+        client.remove_sponsor(&admin, &sponsor);
+
+        let user = Address::generate(&e);
+        client.complete_task(&admin, &task_id, &user);
+    }
+
+    #[test]
+    fn test_complete_task_admin_creator_unaffected() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let user = Address::generate(&e);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.complete_task(&admin, &task_id, &user);
+        let task = client.get_task(&task_id);
+        assert_eq!(task.status, TaskStatus::Completed);
     }
 }
