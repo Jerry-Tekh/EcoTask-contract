@@ -1,9 +1,11 @@
+# GitHub Actions CI Workflow for EcoTask Contracts
 name: CI
 on: [push, pull_request]
 
 jobs:
-  build:
+  lint-and-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -11,7 +13,51 @@ jobs:
           target: wasm32v1-none
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32v1-none --release --locked
-      - run: cargo test --workspace
-      - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo build --target wasm32v1-none --release --locked
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        crate: [eco-token, task-registry, reward-engine]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.83
+      - name: Run unit tests
+        run: cargo nextest run -p ${{ matrix.crate }}
+      - name: Publish Test Report
+        uses: test-summary/action@v2
+        with:
+          paths: target/nextest/default/junit.xml
+        if: always()
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.83
+      - name: Run integration tests
+        run: cargo nextest run -p ecotask-contracts --test reward_integration_test --test-threads 1
+      - name: Publish Test Report
+        uses: test-summary/action@v2
+        with:
+          paths: target/nextest/default/junit.xml
+        if: always()
