@@ -32,7 +32,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.83
       - name: Run unit tests
-        run: cargo nextest run -p ${{ matrix.crate }} --junit-xml target/nextest/${{ matrix.crate }}.xml
+        run: cargo nextest run -p ${{ matrix.crate }} --no-tests=pass --junit-xml target/nextest/${{ matrix.crate }}.xml
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
@@ -51,7 +51,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.83
       - name: Run integration tests
-        run: cargo nextest run --test reward_integration_test --test-threads 1 --junit-xml target/nextest/integration.xml
+        run: cargo nextest run -p ecotask-contracts --test reward_integration_test --test-threads 1 --no-tests=pass --junit-xml target/nextest/integration.xml
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
