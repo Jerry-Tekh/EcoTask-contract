@@ -38,7 +38,7 @@ jobs:
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
-          paths: target/nextest/junit.xml
+          paths: target/nextest/default/junit.xml
         if: always()
 
   integration-tests:
@@ -59,5 +59,5 @@ jobs:
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
-          paths: target/nextest/junit.xml
+          paths: target/nextest/default/junit.xml
         if: always()
