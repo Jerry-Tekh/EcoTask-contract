@@ -1,6 +1,6 @@
 use crate::storage;
 use soroban_sdk::{
-    contract, contractevent, contractimpl, vec, Address, Env, IntoVal, String, Symbol, Val,
+    contract, contractevent, contractimpl, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
 };
 pub use storage::{Verification, VerificationStatus};
 use task_registry::{Task, TaskStatus};
@@ -245,6 +245,11 @@ impl RewardEngine {
             panic!("engine: proof already submitted");
         }
 
+        let cid_hash = e.crypto().sha256(&proof_cid.to_bytes()).to_bytes();
+        if storage::read_cid_index(&e, &cid_hash).is_some() {
+            panic!("engine: proof cid already submitted");
+        }
+
         let verification = Verification {
             task_id,
             user: user.clone(),
@@ -257,6 +262,14 @@ impl RewardEngine {
         };
 
         storage::write_verification(&e, task_id, &user, &verification);
+        storage::write_cid_index(
+            &e,
+            &cid_hash,
+            &storage::VerificationKey {
+                task_id,
+                user: user.clone(),
+            },
+        );
         storage::push_verification_key(&e, task_id, &user);
         storage::push_user_verification_key(&e, &user, task_id);
 
@@ -481,6 +494,17 @@ impl RewardEngine {
         }
     }
 
+    pub fn get_verification_by_cid_hash(e: Env, cid_hash: BytesN<32>) -> Verification {
+        let key = match storage::read_cid_index(&e, &cid_hash) {
+            Some(key) => key,
+            None => panic!("engine: not found"),
+        };
+        match storage::read_verification(&e, key.task_id, &key.user) {
+            Some(verification) => verification,
+            None => panic!("engine: not found"),
+        }
+    }
+
     /// Returns up to `limit` pending verifications starting from `cursor`
     /// (a zero-based offset into the full verification log). Bounded reads
     /// make this safe for off-chain indexers to paginate at scale.
@@ -593,6 +617,84 @@ mod test {
         );
 
         (e, admin, oracle, user, task_id, engine_client)
+    }
+
+    fn setup_two_tasks() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        u64,
+        u64,
+        RewardEngineClient<'static>,
+    ) {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let first_user = Address::generate(&e);
+        let second_user = Address::generate(&e);
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        e.mock_all_auths_allowing_non_root_auth();
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let expires_at = e.ledger().timestamp() + 10000;
+        let first_task = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "first-task"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+        let second_task = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "second-task"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+
+        (
+            e,
+            oracle,
+            first_user,
+            second_user,
+            first_task,
+            second_task,
+            engine_client,
+        )
+    }
+
+    #[test]
+    fn test_lookup_by_cid_hash() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        let proof_cid = String::from_str(&e, "QmLookupProof");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        let cid_hash = e.crypto().sha256(&proof_cid.to_bytes()).to_bytes();
+        let verification = client.get_verification_by_cid_hash(&cid_hash);
+
+        assert_eq!(verification.task_id, task_id);
+        assert_eq!(verification.user, user);
+        assert_eq!(verification.proof_cid, proof_cid);
+    }
+
+    #[test]
+    fn test_duplicate_cid_across_tasks_rejected() {
+        let (e, oracle, first_user, second_user, first_task, second_task, client) =
+            setup_two_tasks();
+        let proof_cid = String::from_str(&e, "QmDuplicateProof");
+        client.submit_proof(&oracle, &first_user, &first_task, &proof_cid);
+
+        let result = client.try_submit_proof(&oracle, &second_user, &second_task, &proof_cid);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -163,8 +163,12 @@ fn test_multi_user_task_completions() {
         &(e.ledger().timestamp() + 10000),
     );
 
-    for user in [&user1, &user2, &user3] {
-        let proof = String::from_str(&e, "QmMulti");
+    for (user, cid) in [
+        (&user1, "QmMulti1"),
+        (&user2, "QmMulti2"),
+        (&user3, "QmMulti3"),
+    ] {
+        let proof = String::from_str(&e, cid);
         engine_client.submit_proof(&oracle, user, &task_id, &proof);
         engine_client.approve_proof(&oracle, user, &task_id, &200);
     }

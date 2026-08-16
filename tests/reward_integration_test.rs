@@ -166,8 +166,9 @@ fn test_multi_user_max_completions() {
         &(e.ledger().timestamp() + 10000),
     );
 
-    for user in users.iter() {
-        let proof = String::from_str(&e, "QmBeach");
+    for (index, user) in users.iter().enumerate() {
+        let cids = ["QmBeach1", "QmBeach2", "QmBeach3", "QmBeach4", "QmBeach5"];
+        let proof = String::from_str(&e, cids[index]);
         engine_client.submit_proof(&oracle, user, &task_id, &proof);
         engine_client.approve_proof(&oracle, user, &task_id, &100);
     }
