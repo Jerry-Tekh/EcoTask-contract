@@ -1,4 +1,7 @@
-use soroban_sdk::{contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
+
+const CID_INDEX_TTL_THRESHOLD: u32 = 100;
+const CID_INDEX_TTL_EXTEND_TO: u32 = 4096;
 
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
@@ -30,6 +33,7 @@ pub enum DataKey {
     Registry,
     Oracles,
     Verification(u64, Address),
+    CidHash(BytesN<32>),
     MinReward,
     MaxReward,
     VerificationList,
@@ -121,6 +125,19 @@ pub fn write_verification(e: &Env, task_id: u64, user: &Address, v: &Verificatio
 
 pub fn read_verification(e: &Env, task_id: u64, user: &Address) -> Option<Verification> {
     let key = DataKey::Verification(task_id, user.clone());
+    e.storage().persistent().get(&key)
+}
+
+pub fn write_cid_index(e: &Env, cid_hash: &BytesN<32>, verification_key: &VerificationKey) {
+    let key = DataKey::CidHash(cid_hash.clone());
+    e.storage().persistent().set(&key, verification_key);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, CID_INDEX_TTL_THRESHOLD, CID_INDEX_TTL_EXTEND_TO);
+}
+
+pub fn read_cid_index(e: &Env, cid_hash: &BytesN<32>) -> Option<VerificationKey> {
+    let key = DataKey::CidHash(cid_hash.clone());
     e.storage().persistent().get(&key)
 }
 
