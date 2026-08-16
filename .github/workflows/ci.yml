@@ -26,17 +26,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.83
       - name: Run unit tests
-        run: cargo nextest run -p ${{ matrix.crate }} --no-tests=pass --junit-xml target/nextest/${{ matrix.crate }}.xml
+        run: cargo nextest run -p ${{ matrix.crate }}
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
-          paths: target/nextest/${{ matrix.crate }}.xml
+          paths: target/nextest/junit.xml
         if: always()
 
   integration-tests:
@@ -45,15 +47,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.83
       - name: Run integration tests
-        run: cargo nextest run -p ecotask-contracts --test reward_integration_test --test-threads 1 --no-tests=pass --junit-xml target/nextest/integration.xml
+        run: cargo nextest run -p ecotask-contracts --test reward_integration_test --test-threads 1
       - name: Publish Test Report
         uses: test-summary/action@v2
         with:
-          paths: target/nextest/integration.xml
+          paths: target/nextest/junit.xml
         if: always()
