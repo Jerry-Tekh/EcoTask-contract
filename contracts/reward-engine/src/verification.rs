@@ -151,6 +151,28 @@ fn require_admin(e: &Env, addr: &Address) {
     }
 }
 
+/// Panics if `user` was last rewarded fewer than the configured cooldown
+/// ledgers ago. A cooldown of 0 (the default) disables this check.
+fn require_cooldown_elapsed(e: &Env, user: &Address) {
+    let cooldown = storage::read_user_cooldown(e);
+    if cooldown == 0 {
+        return;
+    }
+    if let Some(last) = storage::read_last_reward_ledger(e, user) {
+        let current_ledger = e.ledger().sequence() as u64;
+        if current_ledger.saturating_sub(last) < cooldown {
+            panic!("engine: user cooldown active");
+        }
+    }
+}
+
+/// Records the ledger at which `user` most recently received a reward, so
+/// future calls to `require_cooldown_elapsed` can rate-limit them.
+fn record_reward_ledger(e: &Env, user: &Address) {
+    let current_ledger = e.ledger().sequence() as u64;
+    storage::write_last_reward_ledger(e, user, current_ledger);
+}
+
 /// Collects up to `limit` pending verifications starting at offset `cursor`
 /// into the full verification log, skipping already-resolved entries.
 ///
@@ -399,6 +421,18 @@ impl RewardEngine {
     ///
     /// # Panics
     ///
+    ///     /// Sets the minimum number of ledgers a user must wait between reward
+    /// approvals. 0 disables the cooldown.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
+    pub fn set_user_cooldown(e: Env, caller: Address, min_ledgers_between_rewards: u64) {
+        caller.require_auth();
+        require_admin(&e, &caller);
+        storage::write_user_cooldown(&e, min_ledgers_between_rewards);
+    }
+
     /// Panics if caller is not the admin.
     ///
     /// # Auth
@@ -573,6 +607,8 @@ impl RewardEngine {
             panic!("engine: reward exceeds task budget");
         }
 
+        require_cooldown_elapsed(&e, &user);
+
         verification.status = VerificationStatus::Approved;
         verification.reward_amount = reward_amount;
         verification.resolved_at = Some(e.ledger().timestamp());
@@ -600,13 +636,14 @@ impl RewardEngine {
 
         RewardPaidEvent {
             oracle,
-            user,
+            user: user.clone(),
             task_id,
             amount: reward_amount,
         }
         .publish(&e);
 
         storage::add_total_paid(&e, reward_amount);
+        record_reward_ledger(&e, &user);
     }
 
     /// Rejects a proof without payout.
@@ -767,6 +804,8 @@ impl RewardEngine {
                 panic!("engine: reward exceeds task budget");
             }
 
+            require_cooldown_elapsed(&e, &user);
+
             verification.status = VerificationStatus::Approved;
             verification.reward_amount = reward_amount;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -792,6 +831,7 @@ impl RewardEngine {
             );
 
             storage::add_total_paid(&e, reward_amount);
+            record_reward_ledger(&e, &user);
         } else {
             verification.status = VerificationStatus::Rejected;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -1919,5 +1959,109 @@ mod test {
         let stranger = Address::generate(&e);
         let result = client.get_verifications_by_user(&stranger, &0, &10);
         assert_eq!(result.len(), 0);
+    }
+
+    /// Shared fixture for cooldown tests: one admin/oracle/user plus two
+    /// separate tasks so the same user can be rewarded twice.
+    fn setup_cooldown() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        u64,
+        u64,
+        RewardEngineClient<'static>,
+    ) {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let expires_at = e.ledger().timestamp() + 10000;
+        let task1 = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "cooldown-task-one"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+        let task2 = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "cooldown-task-two"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+
+        (e, admin, oracle, user, task1, task2, engine_client)
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: user cooldown active")]
+    fn test_cooldown_blocks_rapid_claims() {
+        let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        client.set_user_cooldown(&admin, &10);
+
+        let p1 = String::from_str(&e, "QmCooldownBlock1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        // Still within the cooldown window: this must panic.
+        let p2 = String::from_str(&e, "QmCooldownBlock2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+    }
+
+    #[test]
+    fn test_cooldown_resets_after_interval() {
+        let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        client.set_user_cooldown(&admin, &10);
+
+        let p1 = String::from_str(&e, "QmCooldownReset1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        // Advance past the cooldown window before claiming again.
+        let next = e.ledger().sequence() + 10;
+        e.ledger().set_sequence_number(next);
+
+        let p2 = String::from_str(&e, "QmCooldownReset2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+
+        let v = client.get_verification(&task2, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
+    }
+
+    #[test]
+    fn test_cooldown_zero_disabled() {
+        let (e, _admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        // Default cooldown is 0 (disabled) — back-to-back rewards succeed.
+        let p1 = String::from_str(&e, "QmCooldownDisabled1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        let p2 = String::from_str(&e, "QmCooldownDisabled2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+
+        let v = client.get_verification(&task2, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
     }
 }
