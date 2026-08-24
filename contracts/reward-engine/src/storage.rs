@@ -50,6 +50,9 @@ pub struct Verification {
     pub status: VerificationStatus,
     pub submitted_at: u64,
     pub resolved_at: Option<u64>,
+    /// Records the oracle that submitted the proof (the submitter).
+    /// Note: the oracle that approves or rejects the proof may be a different registered oracle,
+    /// but this field will not be updated to the approver.
     pub oracle: Address,
     /// Monotonically-increasing sequence number assigned at submit time.
     /// Never changes once set, so it is a stable pagination cursor: resolving
