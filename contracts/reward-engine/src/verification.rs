@@ -222,6 +222,12 @@ fn record_reward_ledger(e: &Env, user: &Address) {
 ///
 /// A vector of pending verification records with `seq > cursor`.
 fn collect_pending(e: &Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Verification> {
+    if limit > storage::MAX_PAGE_SIZE {
+        panic!(
+            "engine: page size exceeds maximum of {}",
+            storage::MAX_PAGE_SIZE
+        );
+    }
     let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
     let state = storage::read_pending_list(e);
     let mut current = state.head;
@@ -1026,7 +1032,16 @@ impl RewardEngine {
     /// * Panics with `engine: use get_pending_verifications_paged`
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
         storage::extend_instance_ttl(&e);
-        panic!("engine: use get_pending_verifications_paged");
+        let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(&e);
+        let state = storage::read_pending_list(&e);
+        let mut current = state.head;
+        while let Some(key) = current {
+            if let Some(v) = storage::read_verification(&e, key.task_id, &key.user) {
+                result.push_back(v);
+            }
+            current = storage::read_pending_node_next(&e, &key);
+        }
+        result
     }
 
     /// Pageable history of a single user's verifications across all tasks,
@@ -1049,6 +1064,12 @@ impl RewardEngine {
         limit: u32,
     ) -> soroban_sdk::Vec<Verification> {
         storage::extend_instance_ttl(&e);
+        if limit > storage::MAX_PAGE_SIZE {
+            panic!(
+                "engine: page size exceeds maximum of {}",
+                storage::MAX_PAGE_SIZE
+            );
+        }
         let count = storage::read_user_verification_count(&e, &user);
         let start = (cursor as u64).min(count);
         let end = start.saturating_add(limit as u64).min(count);
@@ -2463,5 +2484,23 @@ mod test {
         let long_cid = "a".repeat(129);
         let proof_cid = String::from_str(&e, &long_cid);
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: page size exceeds maximum of 50")]
+    fn test_get_pending_verifications_paged_limit_exceeds_max_panics() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.get_pending_verifications_paged(&0, &51);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: page size exceeds maximum of 50")]
+    fn test_get_verifications_by_user_limit_exceeds_max_panics() {
+        let (e, _admin, _oracle, user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        client.get_verifications_by_user(&user, &0, &51);
     }
 }
