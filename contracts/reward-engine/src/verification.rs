@@ -1011,12 +1011,22 @@ impl RewardEngine {
 
     /// Returns all pending verifications.
     ///
+    /// # Deprecated
+    ///
+    /// This function is deprecated because it iterates the entire pending list
+    /// and will exceed Soroban transaction limits at scale. Use
+    /// `get_pending_verifications_paged` instead.
+    ///
     /// # Returns
     ///
     /// A vector of all pending verification records.
+    ///
+    /// # Panics
+    ///
+    /// * Panics with `engine: use get_pending_verifications_paged`
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
         storage::extend_instance_ttl(&e);
-        collect_pending(&e, 0, u32::MAX)
+        panic!("engine: use get_pending_verifications_paged");
     }
 
     /// Pageable history of a single user's verifications across all tasks,
@@ -1583,12 +1593,12 @@ mod test {
         let proof_cid = String::from_str(&e, "QmPending1");
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
 
-        let pending = client.get_pending_verifications();
+        let pending = client.get_pending_verifications_paged(&0, &1000);
         assert_eq!(pending.len(), 1);
 
         client.approve_proof(&oracle, &user, &task_id, &1000);
 
-        let pending = client.get_pending_verifications();
+        let pending = client.get_pending_verifications_paged(&0, &1000);
         assert_eq!(pending.len(), 0);
     }
 
@@ -1605,7 +1615,7 @@ mod test {
         let proof2 = String::from_str(&e, "QmPend2");
         client.submit_proof(&oracle, &user2, &task_id, &proof2);
 
-        let pending = client.get_pending_verifications();
+        let pending = client.get_pending_verifications_paged(&0, &1000);
         assert_eq!(pending.len(), 2);
     }
 
@@ -1619,24 +1629,24 @@ mod test {
 
         let proof1 = String::from_str(&e, "QmRes1");
         client.submit_proof(&oracle, &user1, &task_id, &proof1);
-        assert_eq!(client.get_pending_verifications().len(), 1);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 1);
 
         client.approve_proof(&oracle, &user1, &task_id, &1000);
-        assert_eq!(client.get_pending_verifications().len(), 0);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 0);
 
         let proof2 = String::from_str(&e, "QmRes2");
         client.submit_proof(&oracle, &user2, &task_id, &proof2);
-        assert_eq!(client.get_pending_verifications().len(), 1);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 1);
 
         client.reject_proof(&oracle, &user2, &task_id);
-        assert_eq!(client.get_pending_verifications().len(), 0);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 0);
 
         let proof3 = String::from_str(&e, "QmRes3");
         client.submit_proof(&oracle, &user3, &task_id, &proof3);
-        assert_eq!(client.get_pending_verifications().len(), 1);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 1);
 
         client.dispute_proof(&admin, &user3, &task_id);
-        assert_eq!(client.get_pending_verifications().len(), 0);
+        assert_eq!(client.get_pending_verifications_paged(&0, &1000).len(), 0);
     }
 
     #[test]
@@ -2179,7 +2189,7 @@ mod test {
         client.reject_proof(&oracle, &user2, &task_id);
         client.reject_proof(&oracle, &user4, &task_id);
 
-        let pending = client.get_pending_verifications();
+        let pending = client.get_pending_verifications_paged(&0, &1000);
         assert_eq!(pending.len(), 2);
         assert_eq!(pending.get(0).unwrap().user, user1);
         assert_eq!(pending.get(1).unwrap().user, user3);
@@ -2250,7 +2260,7 @@ mod test {
         // The unbounded view returns exactly the remaining pending set, in
         // submission order (seqs 1, 2, 4, 5 — the rejected and disputed
         // entries are gone).
-        let pending = client.get_pending_verifications();
+        let pending = client.get_pending_verifications_paged(&0, &1000);
         assert_eq!(pending.len(), 4);
         assert_eq!(pending.get(0).unwrap().seq, 1);
         assert_eq!(pending.get(1).unwrap().seq, 2);
